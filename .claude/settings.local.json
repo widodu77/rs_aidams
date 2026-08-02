@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "PowerShell(Get-Command pdftoppm -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command pdftotext -ErrorAction SilentlyContinue)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Git\\\\mingw64\\\\bin\\\\pdftotext.exe\" -layout \"C:\\\\Users\\\\walid\\\\OneDrive\\\\Desktop\\\\current state of RL in LLMs research paper.pdf\" \"C:\\\\Users\\\\walid\\\\OneDrive\\\\Desktop\\\\current state of RL in LLMs research paper.txt\"; if \\($?\\) { \\(Get-Item \"C:\\\\Users\\\\walid\\\\OneDrive\\\\Desktop\\\\current state of RL in LLMs research paper.txt\"\\).Length })",
+      "WebSearch",
+      "WebFetch(domain:link.springer.com)",
+      "WebFetch(domain:aclanthology.org)",
+      "WebFetch(domain:arxiv.org)"
+    ]
+  }
+}
