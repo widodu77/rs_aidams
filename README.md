@@ -100,4 +100,4 @@ Assistance to date covers literature mapping and citation verification, proposal
 
 ---
 
-*Research Study — MSc AI for Data and Management Sciences (AIDAMS), ESSEC Business School / CentraleSupélec, Paris-Saclay. Walid Ajbar, 2026.*
+*Research Study — bachelors in AI for Data and Management Sciences (AIDAMS), ESSEC Business School / CentraleSupélec, Paris-Saclay. Walid Ajbar, 2026.*
