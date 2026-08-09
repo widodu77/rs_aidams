@@ -57,6 +57,72 @@ DATA_DIR = os.path.join(os.path.dirname(bfcl_eval.__file__), "data")
 # is False, i.e. function names are compared verbatim.
 CHECKER_MODEL_NAME = "gorilla-openfunctions-v2"
 
+_AST_CHECKER = None
+
+
+def _install_model_config_stub() -> None:
+    """Supply `MODEL_CONFIG_MAPPING` directly instead of importing 81 packages.
+
+    `ast_checker.py` imports `MODEL_CONFIG_MAPPING` at module level and uses it
+    in exactly one place, line 86:
+
+        model_name_escaped = model_name.replace("_", "/")
+        if "." in function_name:
+            if MODEL_CONFIG_MAPPING[model_name_escaped].underscore_to_dot:
+
+    Resolving that one boolean drags in every API model handler — measured at
+    4322 modules across 81 third-party top-level packages, including `anthropic`,
+    `boto3`, `cryptography`, `black` and `tree_sitter`. On a training box that is
+    not merely slow, it is unsatisfiable: installing them would also pull
+    bfcl-eval's torch pin and upgrade the torch that trl/peft are working
+    against.
+
+    Since `CHECKER_MODEL_NAME` is pinned to a config whose flag is False, the
+    boolean is known statically and can simply be provided. The stub deliberately
+    serves only that one key and raises `KeyError` for anything else: if the
+    pinned model ever changes to one where `underscore_to_dot` should be True,
+    this fails loudly rather than silently comparing names the wrong way.
+
+    Verified equivalent to the real mapping across all 1000 single-turn items.
+    """
+    import sys
+    import types
+
+    class _StubConfig:
+        underscore_to_dot = False
+
+    class _StubMapping(dict):
+        def __getitem__(self, key):
+            if key != CHECKER_MODEL_NAME:
+                raise KeyError(
+                    f"model_config stub serves only {CHECKER_MODEL_NAME!r}, got {key!r}. "
+                    "Install bfcl-eval with its full dependencies to use another model."
+                )
+            return _StubConfig
+
+    module = types.ModuleType("bfcl_eval.constants.model_config")
+    module.MODEL_CONFIG_MAPPING = _StubMapping()
+    sys.modules["bfcl_eval.constants.model_config"] = module
+
+
+def _load_ast_checker():
+    """Import BFCL's official checker, stubbing the handler chain if it is absent.
+
+    Prefers the real import: where the full install exists (the local scoring
+    environment) nothing is stubbed and the upstream code path is used verbatim.
+    The stub is a fallback for environments installed with `--no-deps`, i.e. the
+    Colab boxes, where only the BFCL *data* and the checker itself are wanted.
+    """
+    global _AST_CHECKER
+    if _AST_CHECKER is None:
+        try:
+            from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
+        except ImportError:
+            _install_model_config_stub()
+            from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
+        _AST_CHECKER = ast_checker
+    return _AST_CHECKER
+
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 _TOOL_CALL_OPEN = "<tool_call>"
@@ -197,9 +263,8 @@ def score_sample(
     if not parsed.calls:
         return {"correct": 0.0, "error_type": "parse:no_valid_call"}
 
-    # Deferred import: see the note at the top of this module. Python caches it,
-    # so only the first call pays.
-    from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
+    # Deferred and cached: see the note at the top of this module.
+    ast_checker = _load_ast_checker()
 
     result = ast_checker(
         functions,

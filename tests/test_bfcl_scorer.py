@@ -371,3 +371,51 @@ def test_ground_truth_derived_predictions_score_perfectly(category):
     assert not failures, (
         f"{len(failures)}/{len(data)} items failed in {category}: {failures[:5]}"
     )
+
+
+# --------------------------------------------------------------------------
+# the model_config stub (needed wherever bfcl-eval is installed --no-deps)
+# --------------------------------------------------------------------------
+
+
+def test_checker_model_name_survives_bfcl_escaping():
+    """`ast_checker` looks up `model_name.replace("_", "/")`, not `model_name`.
+
+    The stub is keyed on `CHECKER_MODEL_NAME` verbatim, so the two only agree
+    while the pinned name contains no underscore. If it were ever changed to one
+    that does, the stub would raise KeyError deep inside scoring rather than at
+    import — this catches that at test time instead.
+    """
+    from scoring.bfcl_scorer import CHECKER_MODEL_NAME
+
+    assert CHECKER_MODEL_NAME.replace("_", "/") == CHECKER_MODEL_NAME
+
+
+def test_model_config_stub_serves_only_the_pinned_model():
+    """The stub must not silently answer for models it knows nothing about.
+
+    It exists because resolving one boolean (`underscore_to_dot`) otherwise pulls
+    4322 modules across 81 third-party packages — unsatisfiable on a training box
+    installed with `--no-deps`. That boolean is known statically *only* for the
+    pinned model. For any other, guessing False would silently compare function
+    names the wrong way for OpenAI/Mistral/Google-style handlers, so the stub
+    raises instead.
+    """
+    import sys
+
+    from scoring.bfcl_scorer import CHECKER_MODEL_NAME, _install_model_config_stub
+
+    key = "bfcl_eval.constants.model_config"
+    saved = sys.modules.get(key)
+    try:
+        _install_model_config_stub()
+        mapping = sys.modules[key].MODEL_CONFIG_MAPPING
+
+        assert mapping[CHECKER_MODEL_NAME].underscore_to_dot is False
+        with pytest.raises(KeyError):
+            mapping["gpt-4o"]
+    finally:
+        if saved is not None:
+            sys.modules[key] = saved
+        else:
+            sys.modules.pop(key, None)

@@ -297,3 +297,62 @@ before assuming you need it.
 This is the third distinct way the *preinstalled Colab environment* has broken a run (entries 10,
 12, 13). The pattern is worth naming: Colab is not a clean machine, and every install fights
 whatever was already there.
+
+---
+
+## 14 — The `--no-deps` trick did not survive contact with training
+
+**Phase D · 2026-08-09**
+
+**Symptom.** Inside the training loop, on the first batch of rollouts:
+
+```
+ModuleNotFoundError: No module named 'anthropic'
+```
+
+raised from `score_sample` → the deferred `ast_checker` import.
+
+**Root cause.** My own design error, and the interesting kind: a fix that was correct for one
+environment, reused in another where its premise did not hold. Entry 7 made the checker import
+lazy so that **generation** could run under `pip install --no-deps bfcl-eval` — generation only
+reads the dataset and never scores. I then copied `--no-deps` into the training notebook, where
+scoring is the entire point: the reward *is* the checker, called once per rollout. The lazy import
+did exactly what it was designed to do, and deferred the failure from startup to the first reward
+computation.
+
+**Why the obvious fix was wrong.** Installing bfcl-eval's real dependencies was measured before
+being attempted: importing `ast_checker` pulls **4322 modules across 81 third-party top-level
+packages** — `anthropic`, `boto3`, `cryptography`, `black`, `tree_sitter`, `qwen_agent`,
+`soundfile` and so on. Beyond being absurd, it would also pull bfcl-eval's torch pin and upgrade
+the torch that trl/peft/transformers are already working against — re-opening entry 10.
+
+**Fix.** Went back to what entry 1 established: the whole chain exists to resolve **one boolean**.
+`ast_checker.py` uses `MODEL_CONFIG_MAPPING` in exactly one place, line 86:
+
+```python
+model_name_escaped = model_name.replace("_", "/")
+if "." in function_name:
+    if MODEL_CONFIG_MAPPING[model_name_escaped].underscore_to_dot:
+```
+
+Since `CHECKER_MODEL_NAME` is pinned to a config where that flag is False, the value is known
+statically. `_install_model_config_stub()` injects a minimal `bfcl_eval.constants.model_config`
+into `sys.modules` before importing the checker, so the handler chain is never touched. The real
+import is still preferred and used wherever the full install exists; the stub is a fallback.
+
+The stub serves **only** the pinned model and raises `KeyError` for anything else — guessing False
+for an OpenAI/Mistral/Google-style handler would silently compare function names the wrong way,
+which is a wrong-answers bug, not a crash.
+
+**Verification.** Scored all 1000 single-turn items twice in separate processes — once normally,
+once with the handler packages made unimportable to force the stub path — and compared verdicts
+item by item. **1000 items, 0 mismatches.** Two tests now pin it: that the stub refuses unknown
+models, and that `CHECKER_MODEL_NAME` contains no underscore (since `ast_checker` looks up
+`name.replace("_", "/")`, the stub's key and the lookup only agree while that holds).
+
+**Lesson.** Two of them. First: when you narrow an environment to make one job fit, check every
+other job that will run in it — `--no-deps` was a correct fix carried into a context whose
+requirements were strictly larger, and the laziness that made it work is exactly what hid the
+problem until mid-training. Second: the answer was already in entry 1, written seven days earlier.
+"This 4322-module chain resolves one boolean" was recorded as an observation; it turned out to be
+the fix. Keeping the log is what made that reusable.
