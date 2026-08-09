@@ -29,7 +29,12 @@ dev = [
 #
 #     uv sync --group train      # only needed where training actually runs
 train = [
-    "trl>=0.27.0",
+    # trl is pinned to >=1.9 because the GRPOConfig surface changed: earlier
+    # versions took `max_prompt_length`, which 1.9.2 rejects outright. Verified
+    # against 1.9.2 by introspecting `dataclasses.fields(GRPOConfig)` rather
+    # than by reading docs, since this is exactly the kind of thing that fails
+    # an hour into a GPU session.
+    "trl>=1.9,<2",
     "peft>=0.19.0",
     "datasets>=4.0.0",
 ]

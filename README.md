@@ -158,7 +158,7 @@ Dependencies are pinned in `uv.lock` (committed deliberately — it is what make
 ├── results/
 │   ├── raw/           # NF4 generations (superseded)
 │   └── raw/vllm/      # fp16 generations (current)
-├── notes/             # daily research notes
+├── notes/             # daily research notes + engineering_log.md
 └── docs/              # proposal, design notes
 ```
 

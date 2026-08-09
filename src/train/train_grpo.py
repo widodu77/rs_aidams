@@ -57,7 +57,11 @@ def parse_args() -> argparse.Namespace:
         "it must be >1 or every advantage is zero and nothing is learned.",
     )
     p.add_argument("--max-completion-length", type=int, default=768, help="matches the baselines' cap")
-    p.add_argument("--max-prompt-length", type=int, default=1024, help="worst observed prompt is 905")
+    # NOTE: there is deliberately no --max-prompt-length. TRL removed
+    # `max_prompt_length` from GRPOConfig (absent in 1.9.2), and its absence is
+    # harmless here: the worst observed BFCL prompt is 905 tokens against a 32k
+    # context. Truncating a prompt would delete function schemas and make the
+    # item unanswerable, so left-truncation was never something to want.
     p.add_argument("--learning-rate", type=float, default=1e-5)
     p.add_argument("--per-device-batch-size", type=int, default=8)
     p.add_argument("--gradient-accumulation-steps", type=int, default=4)
@@ -139,9 +143,17 @@ def main() -> None:
         per_device_train_batch_size=args.per_device_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_generations=args.num_generations,
-        max_prompt_length=args.max_prompt_length,
         max_completion_length=args.max_completion_length,
         temperature=args.temperature,
+        # Truncated completions are NOT masked out of the loss (TRL's default).
+        # A rollout that hit the cap never reached its tool call, so it scores
+        # zero correctness and pays the full think penalty — which is exactly
+        # the signal wanted. Rambling past the budget is a real failure the
+        # policy should learn to avoid, not noise to be hidden from it. The fp16
+        # baselines put this at 2-3.5% of items, so it is a small effect either
+        # way; recorded here because the opposite choice is defensible and
+        # should be a decision rather than an accident.
+        mask_truncated_completions=False,
         reward_weights=reward_weights,
         logging_steps=args.log_steps,
         save_steps=args.save_steps,
