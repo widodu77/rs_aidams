@@ -49,16 +49,29 @@ Deliberately *not* measured as "items the model gets wrong" — that would be ci
 
 ## Early evidence
 
-From the fixed-policy baselines on Qwen3-1.7B (preliminary — `always` on `multiple` is n=41, the rest n=100):
+Fixed-policy baselines on Qwen3-1.7B — 100 items per category, 500 per policy, greedy decoding:
 
-| Category | never-think | always-think |
-|---|---|---|
-| `simple` | 88.0% | **95.0%** |
-| `multiple` | **93.0%** | 82.9% |
+| Category | never-think | always-think | | never tokens | always tokens |
+|---|---|---|---|---|---|
+| `simple` | 88.0% | **95.0%** | | 35 | 177 |
+| `multiple` | **93.0%** | 86.0% | | 36 | 205 |
+| `parallel` | 18.0% | **67.0%** | | 46 | 237 |
+| `parallel_multiple` | 29.0% | **70.0%** | | 57 | 362 |
+| `irrelevance` | 31.0% | **81.0%** | | 27 | 254 |
+| **overall** | 51.8% | **79.8%** | | 40 | 247 |
 
-Thinking **helps** on simple calls and **hurts** when the model has to pick between several candidate functions. Neither fixed policy wins everywhere — which is the entire premise of the project, visible in real data before any training has happened.
+Reasoning buys +28 points overall, for 6× the tokens. But **neither policy wins everywhere**: on `multiple` — one call, several candidate functions to choose between — thinking actively *hurts*, 93.0% against 86.0%. A fixed policy is leaving accuracy on the table in both directions, which is the entire premise of the project, visible in real data before any training has happened.
 
-A second observation: Qwen3 already refuses to reason on easy items even when instructed to, opening a `<think>` block and immediately closing it. The base model has a crude gate of its own, which suggests a better, learned one is reachable.
+**The base model already gates, and gates badly.** Told to always reason, Qwen3 refuses on 15% of items — it opens a `<think>` block and immediately closes it. Splitting the always-run by whether it actually reasoned:
+
+| Category | self-gated | accuracy | reasoned | accuracy |
+|---|---|---|---|---|
+| `simple` | 18 | 94.4% | 82 | 95.1% |
+| `parallel` | 36 | 47.2% | 64 | 78.1% |
+
+On simple calls that gate is well calibrated — it skips reasoning precisely where reasoning wasn't buying anything (94.4% vs 95.1%). On `parallel`, the category where reasoning helps *most*, it fires on more than a third of items and those items score 30 points lower.
+
+The model chooses what to gate, so gated items are self-selected and may just be harder — the counterfactual run is pending. But a well-calibrated gate selects *easy* items, which is demonstrably what it does on `simple` and demonstrably not what it does on `parallel`. Either way this raises the bar: the comparison is not "learned gate vs no gate" but "learned gate vs the crude one Qwen3 already has".
 
 ## Three ways this can end
 
@@ -75,8 +88,8 @@ There is no outcome where the project has nothing to report.
 | Phase | | |
 |---|---|---|
 | **A** | Per-sample BFCL scoring | done |
-| **B** | Output contract + fixed-prompt baselines | in progress |
-| **C** | Reward function + test suite | pending |
+| **B** | Output contract + fixed-prompt baselines | done |
+| **C** | Reward function + test suite | done |
 | **D** | GRPO training | pending |
 | **E** | Tradeoff curve + H1 analysis | pending |
 | **F** | Paper, demo, documentation | pending |

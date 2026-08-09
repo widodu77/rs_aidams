@@ -1,0 +1,134 @@
+{
+  "always/irrelevance": {
+    "policy": "always",
+    "category": "irrelevance",
+    "n": 100,
+    "accuracy": 0.81,
+    "mean_completion_tokens": 254.25,
+    "mean_think_tokens": 185.85,
+    "think_rate": 0.95,
+    "truncated": 0.05,
+    "no_call_rate": 0.81
+  },
+  "always/multiple": {
+    "policy": "always",
+    "category": "multiple",
+    "n": 100,
+    "accuracy": 0.86,
+    "mean_completion_tokens": 204.72,
+    "mean_think_tokens": 156.78,
+    "think_rate": 0.97,
+    "truncated": 0.02,
+    "no_call_rate": 0.04
+  },
+  "always/parallel": {
+    "policy": "always",
+    "category": "parallel",
+    "n": 100,
+    "accuracy": 0.67,
+    "mean_completion_tokens": 236.5,
+    "mean_think_tokens": 147.46,
+    "think_rate": 0.64,
+    "truncated": 0.01,
+    "no_call_rate": 0.01
+  },
+  "always/parallel_multiple": {
+    "policy": "always",
+    "category": "parallel_multiple",
+    "n": 100,
+    "accuracy": 0.7,
+    "mean_completion_tokens": 362.34,
+    "mean_think_tokens": 248.53,
+    "think_rate": 0.85,
+    "truncated": 0.03,
+    "no_call_rate": 0.05
+  },
+  "always/simple_python": {
+    "policy": "always",
+    "category": "simple_python",
+    "n": 100,
+    "accuracy": 0.95,
+    "mean_completion_tokens": 176.86,
+    "mean_think_tokens": 136.83,
+    "think_rate": 0.82,
+    "truncated": 0.0,
+    "no_call_rate": 0.0
+  },
+  "never/irrelevance": {
+    "policy": "never",
+    "category": "irrelevance",
+    "n": 100,
+    "accuracy": 0.31,
+    "mean_completion_tokens": 27.09,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.31
+  },
+  "never/multiple": {
+    "policy": "never",
+    "category": "multiple",
+    "n": 100,
+    "accuracy": 0.93,
+    "mean_completion_tokens": 35.51,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.03
+  },
+  "never/parallel": {
+    "policy": "never",
+    "category": "parallel",
+    "n": 100,
+    "accuracy": 0.18,
+    "mean_completion_tokens": 46.35,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.0
+  },
+  "never/parallel_multiple": {
+    "policy": "never",
+    "category": "parallel_multiple",
+    "n": 100,
+    "accuracy": 0.29,
+    "mean_completion_tokens": 57.05,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.0
+  },
+  "never/simple_python": {
+    "policy": "never",
+    "category": "simple_python",
+    "n": 100,
+    "accuracy": 0.88,
+    "mean_completion_tokens": 35.14,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.0
+  },
+  "always/OVERALL": {
+    "policy": "always",
+    "category": "OVERALL",
+    "n": 500,
+    "accuracy": 0.798,
+    "mean_completion_tokens": 246.934,
+    "mean_think_tokens": 175.09,
+    "think_rate": 0.846,
+    "truncated": 0.022,
+    "no_call_rate": 0.182
+  },
+  "never/OVERALL": {
+    "policy": "never",
+    "category": "OVERALL",
+    "n": 500,
+    "accuracy": 0.518,
+    "mean_completion_tokens": 40.228,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.068
+  }
+}
