@@ -333,6 +333,41 @@ def test_metric_fns_are_logging_only_and_report_the_collapse_signals(simple_item
     assert metrics["metric_mean_think_tokens"] == [0.0, 4.0, 0.0]
 
 
+def test_trl_reward_fn_accepts_json_encoded_columns(simple_item):
+    """Columns arrive JSON-encoded from `train.dataset`; both forms must work.
+
+    Arrow cannot infer a schema for the nested `function` / `ground_truth`
+    structures, so the dataset carries them as strings. If the reward silently
+    mishandled that, every training reward would be computed against a string
+    instead of a schema — scoring zero everywhere, with no error raised.
+    """
+    import json
+
+    from rewards.reward import make_metric_fns
+
+    sample = simple_item["sample"]
+    call = call_text(simple_item["func_name"], simple_item["args"])
+    completions = [call, "<think>hmm</think>" + call]
+
+    decoded = {
+        "function": [sample["function"]] * 2,
+        "ground_truth": [sample["ground_truth"]] * 2,
+        "category": ["simple_python"] * 2,
+    }
+    encoded = {
+        "function": [json.dumps(sample["function"])] * 2,
+        "ground_truth": [json.dumps(sample["ground_truth"])] * 2,
+        "category": ["simple_python"] * 2,
+    }
+
+    reward_fn = make_reward_fn(FakeTokenizer())
+    assert reward_fn(None, completions, **encoded) == reward_fn(None, completions, **decoded)
+
+    # And the correctness metric, which scores independently of the reward.
+    correctness = next(f for f in make_metric_fns(FakeTokenizer()) if "correctness" in f.__name__)
+    assert correctness(None, completions, **encoded) == [1.0, 1.0]
+
+
 def test_reward_fn_has_a_stable_name():
     """TRL logs reward functions under __name__; a collision would merge traces."""
     from rewards.reward import make_metric_fns

@@ -57,9 +57,20 @@ def build_records(tokenizer, categories=DEFAULT_CATEGORIES, policy: str = TRAIN_
             records.append(
                 {
                     "prompt": prompt,
-                    # Consumed by the reward function via TRL's **columns.
-                    "function": sample["function"],
-                    "ground_truth": sample["ground_truth"],
+                    # JSON-encoded, NOT nested objects. `datasets` builds an
+                    # Arrow schema by type inference, and neither column can be
+                    # given one: every item's function schema has a different
+                    # shape, and BFCL ground truth mixes types inside a single
+                    # acceptable-values list (e.g. `"formatted": [true, ""]`),
+                    # which Arrow rejects outright with
+                    #   ArrowInvalid: Could not convert 'true' with type str
+                    #
+                    # Encoding to strings also guarantees the structures reach
+                    # the reward function exactly as written, with no Arrow type
+                    # coercion silently reshaping them in between.
+                    # `rewards.reward` decodes them at the TRL boundary.
+                    "function": json.dumps(sample["function"]),
+                    "ground_truth": json.dumps(sample["ground_truth"]),
                     "category": category,
                     "id": sample["id"],
                 }

@@ -23,9 +23,24 @@ by whether correctness went up.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from scoring.bfcl_scorer import ParsedOutput, parse_model_output, score_sample
+
+
+def _decode(value):
+    """Decode a dataset column that may arrive JSON-encoded.
+
+    `train.dataset` stores `function` and `ground_truth` as JSON strings because
+    Arrow cannot infer a schema for them — the function schemas differ per item,
+    and BFCL ground truth mixes types within one acceptable-values list. Decoding
+    happens here, at the TRL boundary, so `compute_reward` keeps taking real
+    Python objects and the direct-call path is unaffected.
+
+    Passed through unchanged when already decoded, so both call styles work.
+    """
+    return json.loads(value) if isinstance(value, str) else value
 
 
 @dataclass(frozen=True)
@@ -170,7 +185,9 @@ def make_reward_fn(tokenizer, config: RewardConfig | None = None):
             parsed = parse_model_output(completion)
             think_tokens = count(parsed.think) if parsed.think else 0
             rewards.append(
-                compute_reward(fns, gt, parsed, category, think_tokens, config)["reward"]
+                compute_reward(
+                    _decode(fns), _decode(gt), parsed, category, think_tokens, config
+                )["reward"]
             )
         return rewards
 
@@ -202,7 +219,7 @@ def make_metric_fns(tokenizer):
             completions, columns["function"], columns["ground_truth"], columns["category"]
         ):
             parsed = parse_model_output(completion)
-            out.append(score_sample(fns, gt, parsed, category)["correct"])
+            out.append(score_sample(_decode(fns), _decode(gt), parsed, category)["correct"])
         return out
 
     def format_rate(prompts=None, completions=None, **columns) -> list[float]:

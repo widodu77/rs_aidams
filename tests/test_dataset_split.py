@@ -21,7 +21,7 @@ import json
 
 import pytest
 
-from train.dataset import load_manifest, split_records, write_manifest
+from train.dataset import build_records, load_manifest, split_records, write_manifest
 
 CATEGORIES = {
     "simple_python": 400,
@@ -106,6 +106,47 @@ def test_invalid_fraction_rejected(records):
         split_records(records, 0.0, seed=0)
     with pytest.raises(ValueError):
         split_records(records, 1.0, seed=0)
+
+
+class StubTokenizer:
+    """Renders a chat template the way the real one would, minus the vocabulary."""
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, **kwargs):
+        return "".join(f"<|{m['role']}|>{m['content']}" for m in messages)
+
+
+def test_every_column_is_arrow_representable():
+    """Dataset columns must all be scalars, or `Dataset.from_list` cannot build a schema.
+
+    This is a regression test for a real failure. `function` and `ground_truth`
+    are heterogeneous nested JSON — every item's function schema has a different
+    shape, and BFCL ground truth mixes types inside one acceptable-values list
+    (`"formatted": [true, ""]`). Arrow infers types per column and rejects both:
+
+        ArrowInvalid: Could not convert 'true' with type str
+
+    So they are carried as JSON strings and decoded at the reward boundary. The
+    invariant that has to hold is simply that no column holds a container.
+    """
+    records = build_records(StubTokenizer(), categories=["simple_python", "multiple"])
+    assert records
+
+    for record in records:
+        for key, value in record.items():
+            assert isinstance(value, str), f"{key} is {type(value).__name__}, not Arrow-safe"
+
+
+def test_encoded_columns_survive_a_round_trip():
+    """Whatever the encoding, the reward must see the original structures back."""
+    from scoring.bfcl_scorer import load_category
+
+    records = build_records(StubTokenizer(), categories=["multiple"])
+    originals = {s["id"]: s for s in load_category("multiple")}
+
+    for record in records[:25]:
+        source = originals[record["id"]]
+        assert json.loads(record["function"]) == source["function"]
+        assert json.loads(record["ground_truth"]) == source["ground_truth"]
 
 
 def test_manifest_round_trips(records, tmp_path):
