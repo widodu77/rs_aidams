@@ -356,3 +356,61 @@ requirements were strictly larger, and the laziness that made it work is exactly
 problem until mid-training. Second: the answer was already in entry 1, written seven days earlier.
 "This 4322-module chain resolves one boolean" was recorded as an observation; it turned out to be
 the fix. Keeping the log is what made that reusable.
+
+---
+
+## 15 — The first smoke test passed, and the passing numbers were the problem
+
+**Phase D · 2026-08-09**
+
+**Symptom.** None. Five steps ran, the adapter saved, no error. The problems were in the logged
+metrics, which is the only reason they were caught before a 200-step run.
+
+**Finding A — three of five steps produced no gradient.**
+
+```
+step 2:  frac_reward_zero_std 1    loss 0    grad_norm 0
+step 3:  frac_reward_zero_std 1    loss 0    grad_norm 0
+step 5:  frac_reward_zero_std 1    loss 0    grad_norm 0
+```
+
+GRPO computes advantage *within* a group of rollouts on the same prompt. When every rollout scores
+identically the advantage is zero and the step teaches nothing. Step 5 is the benign-looking
+version: all four rollouts correct, reward 1.2 across the board, no learning.
+
+This is structural at lambda = 0 and it sharpens what the go/no-go gate actually measures. With
+correctness + format only, every saturated group is dead weight — and `simple_python` is 92.5%
+correct under *never*, so saturation is the common case. Introducing lambda partly fixes it:
+rollouts that agree on correctness still differ in think length, so the group keeps variance. The
+group size was also only 4; raised to 8.
+
+Related: `entropy` logged at 0.04–0.12, which is low — near-identical rollouts produce
+near-identical rewards, compounding the problem. Worth noting that EGPO (arXiv:2508.05118, already
+in the reference table) is precisely about entropy-enhanced exploration for function calling. That
+citation moved from background to directly relevant.
+
+**Finding B — the configuration could not finish in a Colab session.**
+
+Smoke ran ~37.5 s/step at **4 completions x 256 tokens**. The intended config was 32 completions x
+768 tokens — 24x the generation work, so ~15 min/step, ~75 h for 300 steps.
+
+Root cause is entry 9 all over again, in a new place: HF `generate` batches statically, and the
+rollout loop runs it hundreds of times. Fixed the same way — `use_vllm=True` with
+`vllm_mode="colocate"`, which keeps vLLM in-process (the only shape that fits one Colab GPU).
+Batch also cut to 16 completions/step, and steps to 200, consistent with the proposal's "a few
+hundred GRPO steps rather than runs to convergence".
+
+Installing vLLM into the training environment re-opens entry 10, so the notebook's install cell now
+has a **required order**: vLLM first (it has the strongest opinions about torch), then trl/peft,
+then the cu130 torch repair — which must come *after* vLLM or vLLM's install reverts it — then the
+torchao uninstall.
+
+**Lesson.** A smoke test that only answers "did it crash" is worth much less than one that logs the
+quantities you would have to reason about later. Both findings were invisible in the pass/fail
+outcome and obvious in the metrics — and the metric functions existed only because collapse was
+identified in advance as the primary failure mode. Instrument for the failure you expect, then read
+the instruments even when the run succeeds.
+
+Also worth noting: entries 9, 10 and 15 are one problem wearing three hats. Static batching cost
+2.36x in generation, then ~24x in training; and each time vLLM was the fix, the CUDA ABI issue came
+along with it.

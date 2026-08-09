@@ -48,13 +48,42 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--eval-fraction", type=float, default=0.2)
     p.add_argument("--split-seed", type=int, default=0)
-    p.add_argument("--max-steps", type=int, default=300)
+    p.add_argument("--max-steps", type=int, default=200)
     p.add_argument(
         "--num-generations",
         type=int,
         default=8,
         help="rollouts per prompt. GRPO's advantage is computed within this group, so "
-        "it must be >1 or every advantage is zero and nothing is learned.",
+        "it must be >1 or every advantage is zero and nothing is learned. Bigger groups "
+        "also reduce how often a group saturates (all rollouts scoring identically), "
+        "which produces a zero-variance step that teaches nothing — measured at 3 of 5 "
+        "steps in the first smoke test at group size 4.",
+    )
+    p.add_argument(
+        "--use-vllm",
+        action="store_true",
+        help="route rollout generation through vLLM in-process (colocate mode). "
+        "Effectively mandatory on Colab: HF `generate` batches statically, so every "
+        "sequence in a rollout batch steps until the longest finishes. Measured at "
+        "~15 min/step for 32 completions x 768 tokens, i.e. ~75 h for 200 steps.",
+    )
+    p.add_argument(
+        "--vllm-gpu-memory-utilization",
+        type=float,
+        default=0.35,
+        help="fraction of VRAM reserved for vLLM in colocate mode. It holds its own copy "
+        "of the weights (3.2 GiB for Qwen3-1.7B fp16), so this budget minus that is the "
+        "KV cache. Too high starves training; too low starves the rollout batch. Lower "
+        "this first on OOM.",
+    )
+    p.add_argument(
+        "--vllm-max-model-len",
+        type=int,
+        default=2048,
+        help="bounds vLLM's KV cache per sequence. Worst BFCL prompt is 905 tokens and "
+        "completions are capped at --max-completion-length, so prompt+completion fits "
+        "well inside this. Capping it is what bought 21x concurrency during baseline "
+        "generation.",
     )
     p.add_argument("--max-completion-length", type=int, default=768, help="matches the baselines' cap")
     # NOTE: there is deliberately no --max-prompt-length. TRL removed
@@ -63,8 +92,14 @@ def parse_args() -> argparse.Namespace:
     # context. Truncating a prompt would delete function schemas and make the
     # item unanswerable, so left-truncation was never something to want.
     p.add_argument("--learning-rate", type=float, default=1e-5)
+    # 8 x 2 = 16 completions per optimizer step, i.e. 2 prompts at group size 8.
+    # Deliberately modest: rollout generation dominates step time, and the
+    # proposal's plan is "a few hundred GRPO steps on a data subset with LoRA,
+    # rather than runs to convergence" — a clear trend across lambda is worth
+    # more for a 4-page paper than one converged number, and long runs are
+    # unreliable under Colab session limits regardless.
     p.add_argument("--per-device-batch-size", type=int, default=8)
-    p.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    p.add_argument("--gradient-accumulation-steps", type=int, default=2)
     p.add_argument("--lora-r", type=int, default=32)
     p.add_argument("--lora-alpha", type=int, default=64)
     p.add_argument("--temperature", type=float, default=1.0, help="rollouts must be sampled, not greedy")
@@ -99,7 +134,19 @@ def main() -> None:
         seed=args.split_seed,
         manifest_path=os.path.join(args.output, "split_manifest.json"),
     )
+    completions_per_step = args.per_device_batch_size * args.gradient_accumulation_steps
     print(f"train {len(train_ds)}  eval {len(eval_ds)}")
+    print(
+        f"{completions_per_step} completions/step "
+        f"({completions_per_step // args.num_generations} prompts x {args.num_generations} rollouts), "
+        f"vllm={'on' if args.use_vllm else 'OFF — expect ~15 min/step'}"
+    )
+    if completions_per_step % args.num_generations:
+        raise ValueError(
+            f"per_device_batch_size * gradient_accumulation_steps "
+            f"({completions_per_step}) must be divisible by num_generations "
+            f"({args.num_generations}); GRPO groups rollouts by prompt."
+        )
 
     reward_config = RewardConfig(
         lambda_think=args.lambda_think,
@@ -154,6 +201,13 @@ def main() -> None:
         # way; recorded here because the opposite choice is defensible and
         # should be a decision rather than an accident.
         mask_truncated_completions=False,
+        # Rollout generation, not the optimizer, is what makes a GRPO step
+        # expensive. Colocate keeps vLLM in this process rather than requiring a
+        # separate server, which is the only shape that fits a single Colab GPU.
+        use_vllm=args.use_vllm,
+        vllm_mode="colocate",
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+        vllm_max_model_length=args.vllm_max_model_len,
         reward_weights=reward_weights,
         logging_steps=args.log_steps,
         save_steps=args.save_steps,
