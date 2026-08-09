@@ -1,0 +1,38 @@
+[project]
+name = "researchwork-summer-aidams"
+version = "0.1.0"
+description = "Adaptive thinking for tool use: RL-trained per-call reasoning policy for small open language models"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.14.0",
+    "bfcl-eval==2026.3.23",
+    "bitsandbytes>=0.50.0",
+    "soundfile>=0.14.0",
+    # torch is declared explicitly, even though bfcl-eval already pulls it in,
+    # because [tool.uv.sources] only overrides *direct* dependencies. Without
+    # this line the CUDA index below is silently ignored and a CPU build is
+    # installed instead.
+    "torch>=2.13.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+# `bfcl-eval` pulls in a CPU-only torch. Phase B onwards needs CUDA, so torch is
+# resolved from PyTorch's own index instead of PyPI. cu128 targets the RTX 3050
+# (Ampere, sm_86); the local driver reports CUDA 13.3, which is backward
+# compatible with this runtime.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }

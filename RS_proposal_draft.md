@@ -43,7 +43,7 @@
 > - Berkeley Function Calling Leaderboard (BFCL) v3 / v4 — the de facto benchmark for function calling, multi-turn evaluation, programmatic correctness — https://gorilla.cs.berkeley.edu/leaderboard.html
 > - Nexus Function Calling Benchmark — multi-step composition, additional coverage — https://github.com/nexusflowai/NexusRaven-V2
 > - τ-bench (Tau-Bench) — multi-turn dialog with goal completion under tool use, used for the secondary evaluation — https://github.com/sierra-research/tau-bench
-> - **Base model:** Qwen2.5-1.5B-Instruct (one of the strongest small open models with native tool-use formatting); fallback Hammer-1.5B (trained specifically for on-device function calling)
+> - **Base model:** Qwen3-1.7B — `<think>` (151667), `</think>` (151668) and `<tool_call>` (151657) are native single tokens, and reason-then-call in a single turn is a trained behaviour. Selected over the originally proposed Qwen2.5-1.5B-Instruct after empirical testing (see below); still ≤2B, so the small-model constraint holds
 > - **Training framework:** TRL (built-in `GRPOTrainer`, supports custom reward functions and verifiable programmatic rewards; vLLM-accelerated rollouts)
 > - **Reward signal:** programmatic — JSON parses, function name matches, arguments validate, multi-turn workflow completes — combined with a length penalty on the reasoning chain
 >
@@ -154,14 +154,32 @@ The evaluator **is** the reward function, so nothing can be trained until a sing
 > 1. **Import coupling.** Importing the checker pulls in `MODEL_CONFIG_MAPPING`, which imports every API model handler, which imports `qwen_agent`, which requires `soundfile`. A missing audio library blocks a pure-string AST checker. The entire chain exists to resolve one boolean, `underscore_to_dot` (a name-mangling quirk for providers that reject `.` in function names). Worked around by pinning `CHECKER_MODEL_NAME` to a config where the flag is False; flagged as a fragility risk for the Colab environment.
 > 2. **Decode, not check, is the real work.** The checker expects `{"func_name": {arg: value}}`, whereas the model emits `{"name": ..., "arguments": {...}}`. The shape conversion, plus separating the `<think>` block from the call, is the part that had to be written.
 
-**Exit:** ✅ one model output scores to a number, in isolation — `src/scoring/bfcl_scorer.py`, verified to discriminate correct calls, wrong function names, wrong argument values, missing required parameters, hallucinated parameters, type errors, wrong call counts, malformed JSON, and correct abstention on irrelevance items. Pinned to `bfcl-eval==2026.3.23` (BFCL v4). *Remaining: extend verification to the `multiple`, `parallel`, and `parallel_multiple` categories.*
+**Exit: met.** `src/scoring/bfcl_scorer.py`, pinned to `bfcl-eval==2026.3.23` (BFCL v4), with a 25-test suite in `tests/`.
+
+Verified in two layers. First, hand-written cases across `simple`, `multiple`, `parallel`, `parallel_multiple` and `irrelevance`, covering correct calls with and without reasoning, wrong function names, wrong argument values, missing required parameters, hallucinated parameters, type errors, wrong call counts, malformed JSON, prose-only output, and both directions of irrelevance. Two properties were confirmed rather than assumed: parallel scoring is order-independent (the model has no reason to emit calls in ground-truth order), and correctness is invariant to whether the model reasoned — the invariant the whole design rests on, since any leakage of the `<think>` block into the correctness term would mean the length penalty is no longer the only pressure acting on the thinking decision.
+
+Second, a full-dataset sweep: every one of the 1000 single-turn items scored with a prediction reconstructed from its own ground truth. This is the check that matters, because hand-written cases only exercise paths someone thought to test. It began at 98.4% and each failure was a defect in the reconstruction rather than the scorer — the scorer was correctly rejecting malformed input. Reaching 100% surfaced three undocumented encoding rules in the BFCL ground-truth format:
+
+1. Optional parameters should be omitted, not filled — BFCL ground truth sometimes lists optional parameters absent from the function schema entirely, so supplying them raises `unexpected_param`
+2. `""` among acceptable values is *not* a reliable optionality marker; it also appears on parameters the schema lists as required, so the schema's `required` list is the authority
+3. Acceptable-value lists nest recursively through lists as well as dicts
+
+The sweep is retained as a parametrized regression test, so a future `bfcl-eval` bump that shifts the ground-truth encoding fails loudly rather than silently degrading every reward the training loop computes.
 
 ### B — Output contract + baseline behavior · *needs A*
 
 - Define a format that lets the reasoning block and the tool call be parsed apart: `<think>…</think><tool_call>{…}</tool_call>` versus bare `<tool_call>…</tool_call>`
-- Run Qwen2.5-1.5B-Instruct under two *fixed prompts*: always-think and never-think
+- Run the base model under two *fixed prompts*: always-think and never-think
 
-**Exit:** accuracy and mean token cost for both fixed policies, broken down by BFCL category. These are the two anchor points of the Pareto frontier and the axis for H1 — a reportable result obtained before any training.
+> **Base model changed (2026-08-02): Qwen2.5-1.5B-Instruct → Qwen3-1.7B.** Anticipated by risk register item 3, but for a different reason than the one recorded there — capability to *represent* thinking, not capacity for tool-use complexity.
+>
+> Qwen2.5-1.5B-Instruct cannot reason and call within a single turn. `<think>` is not in its vocabulary (three tokens) and the model was never trained to emit it; that convention arrived with Qwen3/QwQ. Prompted to reason first, it writes `think:` as prose and then either answers the question directly without calling anything, or stops. Prefilling the opening tag produces well-formed `<think>` blocks, but the model then emits `<|im_end|>` immediately after `</think>` and never reaches the call. Feeding its own completed reasoning back as context yields an empty continuation: once `</think>` is present the turn is over. It does one thing per turn — reasons, or calls, never both.
+>
+> The workaround (prefilling `<tool_call>` to force a call) was rejected: it would make the always-think policy call on every irrelevance item by construction, destroying the most informative category with an artefact rather than a finding.
+>
+> This reframes the base-model choice as a substantive design decision rather than an arbitrary one: **a study of *when* to think requires a model that can represent thinking at all.** Qwen3 exposes `enable_thinking` in its chat template, which maps directly onto the two fixed policies and onto the free choice the Phase D policy must make.
+
+**Exit:** accuracy and mean token cost for both fixed policies, broken down by BFCL category. Reported alongside three diagnostics that separate a result from an artefact: think-rate (must be ~1.0 and ~0.0, or the policies are not being enforced), truncation rate at the generation cap (truncated reasoning produces no call and scores zero, so a high rate means the cap rather than the model is driving accuracy), and no-call rate. These are the two anchor points of the Pareto frontier and the axis for H1 — a reportable result obtained before any training.
 
 ### C — Reward function · *needs A + B*
 

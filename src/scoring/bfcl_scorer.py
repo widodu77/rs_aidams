@@ -42,7 +42,49 @@ DATA_DIR = os.path.join(os.path.dirname(bfcl_eval.__file__), "data")
 CHECKER_MODEL_NAME = "gorilla-openfunctions-v2"
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
-_TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+
+_TOOL_CALL_OPEN = "<tool_call>"
+_JSON_DECODER = json.JSONDecoder()
+
+
+def _iter_tool_calls(text: str):
+    """Yield `(parsed_object, error)` for each `<tool_call>` in the text.
+
+    The closing `</tool_call>` is treated as **optional**, which is a deliberate
+    decision rather than laziness.
+
+    `<tool_call>` and `</tool_call>` are single added tokens in Qwen2.5's
+    vocabulary (151657 / 151658) belonging to its native tool-calling format. In
+    practice the model emits the opening token and the JSON, then goes straight
+    to `<|im_end|>` without ever emitting the closing token. Requiring it would
+    mean the baselines measure Qwen's tag-emission habits rather than the effect
+    of reasoning on call correctness — confounding the exact comparison this
+    project exists to make.
+
+    So instead of matching a closing delimiter, the JSON object is consumed with
+    `raw_decode`, which reads exactly one value and reports where it ended. This
+    tolerates a missing closing tag and trailing text, while still failing on
+    genuinely malformed JSON — so `format_ok` keeps its meaning for the reward.
+    """
+    position = 0
+    while True:
+        start = text.find(_TOOL_CALL_OPEN, position)
+        if start == -1:
+            return
+
+        json_start = start + len(_TOOL_CALL_OPEN)
+        while json_start < len(text) and text[json_start].isspace():
+            json_start += 1
+
+        try:
+            obj, end = _JSON_DECODER.raw_decode(text, json_start)
+        except json.JSONDecodeError as exc:
+            yield None, f"malformed JSON in tool_call: {exc}"
+            position = json_start
+            continue
+
+        yield obj, None
+        position = end
 
 
 @dataclass
@@ -70,19 +112,25 @@ def parse_model_output(text: str) -> ParsedOutput:
     inside `<tool_call>` blocks: a model that emits malformed JSON has failed,
     and the reward must be able to see that.
     """
+    # An empty `<think></think>` is not reasoning. Qwen3's chat template emits
+    # exactly that when `enable_thinking=False`, so counting it as a think block
+    # would report the never-policy as reasoning on every single item.
     think_match = _THINK_RE.search(text)
-    think = think_match.group(1).strip() if think_match else None
+    think = (think_match.group(1).strip() or None) if think_match else None
 
     calls: list[dict] = []
     errors: list[str] = []
     format_ok = True
 
-    for raw in _TOOL_CALL_RE.findall(text):
-        try:
-            obj = json.loads(raw.strip())
-        except json.JSONDecodeError as exc:
+    for obj, error in _iter_tool_calls(text):
+        if error is not None:
             format_ok = False
-            errors.append(f"malformed JSON in tool_call: {exc}")
+            errors.append(error)
+            continue
+
+        if not isinstance(obj, dict):
+            format_ok = False
+            errors.append(f"tool_call payload is not an object: {obj!r}")
             continue
 
         name = obj.get("name")

@@ -1,3 +1,15 @@
 *.pdf
 *.png
 /RS_proposal_draft_v1_overthinking_archived.md
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+
+# uv.lock is intentionally NOT ignored: it pins the exact dependency graph and
+# is what makes the experiments reproducible.
+
+# Experiment outputs
+results/**/*.pt
+results/**/*.safetensors

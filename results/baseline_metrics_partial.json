@@ -1,0 +1,101 @@
+{
+  "always/multiple": {
+    "policy": "always",
+    "category": "multiple",
+    "n": 41,
+    "accuracy": 0.8292682926829268,
+    "mean_completion_tokens": 223.70731707317074,
+    "mean_think_tokens": 180.58536585365854,
+    "think_rate": 0.975609756097561,
+    "truncated": 0.0,
+    "no_call_rate": 0.04878048780487805
+  },
+  "always/simple_python": {
+    "policy": "always",
+    "category": "simple_python",
+    "n": 100,
+    "accuracy": 0.95,
+    "mean_completion_tokens": 176.86,
+    "mean_think_tokens": 136.83,
+    "think_rate": 0.82,
+    "truncated": 0.0,
+    "no_call_rate": 0.0
+  },
+  "never/irrelevance": {
+    "policy": "never",
+    "category": "irrelevance",
+    "n": 100,
+    "accuracy": 0.31,
+    "mean_completion_tokens": 27.09,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.31
+  },
+  "never/multiple": {
+    "policy": "never",
+    "category": "multiple",
+    "n": 100,
+    "accuracy": 0.93,
+    "mean_completion_tokens": 35.51,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.03
+  },
+  "never/parallel": {
+    "policy": "never",
+    "category": "parallel",
+    "n": 100,
+    "accuracy": 0.18,
+    "mean_completion_tokens": 46.35,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.0
+  },
+  "never/parallel_multiple": {
+    "policy": "never",
+    "category": "parallel_multiple",
+    "n": 100,
+    "accuracy": 0.29,
+    "mean_completion_tokens": 57.05,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.0
+  },
+  "never/simple_python": {
+    "policy": "never",
+    "category": "simple_python",
+    "n": 100,
+    "accuracy": 0.88,
+    "mean_completion_tokens": 35.14,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.0
+  },
+  "always/OVERALL": {
+    "policy": "always",
+    "category": "OVERALL",
+    "n": 141,
+    "accuracy": 0.9148936170212766,
+    "mean_completion_tokens": 190.4822695035461,
+    "mean_think_tokens": 149.5531914893617,
+    "think_rate": 0.8652482269503546,
+    "truncated": 0.0,
+    "no_call_rate": 0.014184397163120567
+  },
+  "never/OVERALL": {
+    "policy": "never",
+    "category": "OVERALL",
+    "n": 500,
+    "accuracy": 0.518,
+    "mean_completion_tokens": 40.228,
+    "mean_think_tokens": 0.0,
+    "think_rate": 0.0,
+    "truncated": 0.0,
+    "no_call_rate": 0.068
+  }
+}

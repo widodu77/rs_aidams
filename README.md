@@ -1,66 +1,110 @@
 # Adaptive Thinking for Tool Use
 
-**Training a small open language model to reason before complex tool calls — and skip reasoning for routine ones.**
+**Teaching a small language model to decide, for each tool call it makes, whether it's worth thinking first.**
 
 ---
 
-## The question
+## Why this is a question at all
 
-Function calling is how production AI agents actually work: user requests get routed through structured tool calls, and the reliability of those calls is a primary deployment constraint. Frontier models handle this well but cost too much at scale. Small open models are affordable but unreliable, which is why a wave of recent work applies reinforcement learning to close the gap.
+AI agents work by calling functions — `search(query)`, `get_weather(city)`, `book_flight(...)`. Getting those calls right is what makes an agent useful, and it is usually the thing that breaks first in production.
 
-Separately, a body of work has shown that explicit chain-of-thought reasoning is sometimes valuable and sometimes pure waste, helpful on ambiguous multi-step problems, a cost with no return on routine ones.
+Large models handle this well but cost too much to run at scale. Small models are cheap and less reliable, which is why a lot of recent work uses reinforcement learning to close the gap.
 
-Current tool-use RL methods sit at one extreme or the other. They either **always** emit reasoning before a call, or **never** do. Neither learns a per-call policy.
+Separately, we know that letting a model reason before it answers often improves the answer. But reasoning isn't free. It costs tokens, which cost money and latency. And it doesn't always help — on an obvious call it's pure waste, and on an ambiguous one it can be the difference between right and wrong.
 
-> **Can a ≤2B-parameter model learn, through reinforcement learning, to invoke reasoning only when the tool call actually warrants it — and where does that adaptive policy land on the cost-quality Pareto frontier?**
+**Existing methods pick one setting and apply it everywhere.** The model either always reasons or never does. Nobody has trained a small model to make that decision *per call*.
 
-## Approach
+> **Can a ≤2B-parameter model learn, through reinforcement learning, to reason only when the tool call actually warrants it — and where does that land on the cost-quality tradeoff?**
 
-A single model emits an optional reasoning block before each tool call:
+## What we're building
 
-```
-<think>…</think><tool_call>{"name": …, "arguments": {…}}</tool_call>   # reasoned
-<tool_call>{"name": …, "arguments": {…}}</tool_call>                   # direct
-```
-
-Training is GRPO over a fully programmatic reward — no learned reward model, no human labels:
+One model that can produce either shape:
 
 ```
-R  =  correctness  +  format_validity  −  λ · think_tokens
+<think>reasoning…</think><tool_call>{"name": …, "arguments": {…}}</tool_call>   ← thought first
+<tool_call>{"name": …, "arguments": {…}}</tool_call>                            ← went straight to it
 ```
 
-During rollouts the model samples both reasoned and direct continuations for the same input, and the reward decides which one pays off. **No complexity supervision is provided at any point** — the think/no-think gate is emergent, and λ traces out the cost-quality frontier.
+It is trained with GRPO against a reward that is entirely programmatic — no human labels, no learned reward model:
 
-### Central hypothesis
+```
+reward  =  correctness  +  format_validity  −  λ · think_tokens
+```
 
-> **H1** — Learned think-probability rises monotonically with intrinsic call complexity.
+Correctness comes from the Berkeley Function Calling Leaderboard's own checker: does the call parse, is the function name right, do the arguments validate.
 
-Complexity is measured post-hoc against fixed properties of the benchmark item (BFCL category, candidate tool-set size, argument count and nesting depth, irrelevance-detection items) rather than against model-relative difficulty, which would make the correlation circular.
+**We never tell the model when to think.** During training it samples both a reasoned and a direct continuation for the same input, and the reward decides which one paid off. The decision rule emerges on its own. The knob `λ` sets the price of thinking — raise it and reasoning has to earn its keep, lower it and reasoning is nearly free.
 
-If H1 holds, the policy is genuinely adaptive rather than a constant policy in disguise. If it fails, the result is a characterization of *where* the gate misfires — which is a finding in its own right.
+## What we're trying to show
+
+**1. The tradeoff curve.** Train at several values of `λ`, then plot accuracy against tokens spent, with always-think and never-think as reference points. The question is whether the adaptive model sits *above the line between them* — buying accuracy at a cost neither fixed policy can reach.
+
+**2. That it thinks for sensible reasons.** A model could score well while thinking essentially at random, so this is checked separately:
+
+> **H1** — the model thinks more often as calls get genuinely harder.
+
+"Harder" is measured against fixed properties of the benchmark item: how many candidate functions it had to choose from, how many arguments the call needs, whether several calls are required, whether the right answer was to call nothing at all.
+
+Deliberately *not* measured as "items the model gets wrong" — that would be circular, since a model thinks when it's uncertain and uncertainty tracks its own errors. The correlation would look impressive and mean nothing.
+
+## Early evidence
+
+From the fixed-policy baselines on Qwen3-1.7B (preliminary — `always` on `multiple` is n=41, the rest n=100):
+
+| Category | never-think | always-think |
+|---|---|---|
+| `simple` | 88.0% | **95.0%** |
+| `multiple` | **93.0%** | 82.9% |
+
+Thinking **helps** on simple calls and **hurts** when the model has to pick between several candidate functions. Neither fixed policy wins everywhere — which is the entire premise of the project, visible in real data before any training has happened.
+
+A second observation: Qwen3 already refuses to reason on easy items even when instructed to, opening a `<think>` block and immediately closing it. The base model has a crude gate of its own, which suggests a better, learned one is reachable.
+
+## Three ways this can end
+
+| Outcome | What it means |
+|---|---|
+| Adaptive beats both fixed policies | Main result — learned per-call gating works |
+| The policy collapses to always or never | The reward can't sustain a gate. A real finding, and one the assessment explicitly rewards |
+| It gates, but not by difficulty | It found some other signal. Characterizing that is a finding |
+
+There is no outcome where the project has nothing to report.
 
 ## Status
 
-Early. Building the evaluation foundation.
-
 | Phase | | |
 |---|---|---|
-| **A** | Per-sample BFCL scoring | in progress |
-| **B** | Output contract + fixed-prompt baselines | pending |
+| **A** | Per-sample BFCL scoring | done |
+| **B** | Output contract + fixed-prompt baselines | in progress |
 | **C** | Reward function + test suite | pending |
 | **D** | GRPO training | pending |
-| **E** | Pareto + H1 analysis | pending |
+| **E** | Tradeoff curve + H1 analysis | pending |
 | **F** | Paper, demo, documentation | pending |
 
-Phase A blocks everything downstream: the evaluator *is* the reward function, so no training is possible until a single model output can be scored in isolation.
+A and B are measurement. C and D are the contribution. E is where we find out whether it worked.
+
+Phase A blocked everything downstream: the evaluator *is* the reward function, so no training was possible until a single model output could be scored in isolation. It now can — `src/scoring/bfcl_scorer.py` wraps BFCL's official AST checker as a per-sample scorer, verified against all 1000 single-turn items.
 
 ## Setup
 
 ```bash
-pip install bfcl-eval
+uv sync
 ```
 
-Full environment and reproduction instructions will land here as the pipeline stabilizes.
+Run the scorer test suite:
+
+```bash
+uv run pytest
+```
+
+Generate baselines (GPU) and score them (CPU) as separate steps, so the expensive half runs once and the analysis can be re-derived freely:
+
+```bash
+uv run python -m generate.run_baseline --load-4bit --policy never --limit 100
+uv run python -m analysis.score_run results/raw/qwen3-1.7b_never.jsonl
+```
+
+Dependencies are pinned in `uv.lock` (committed deliberately — it is what makes the experiments reproducible). BFCL is pinned to `bfcl-eval==2026.3.23`, which ships the v4 data inside the package.
 
 ## Layout
 
@@ -68,17 +112,19 @@ Full environment and reproduction instructions will land here as the pipeline st
 ├── src/
 │   ├── scoring/       # per-sample BFCL scorer            (Phase A)
 │   ├── prompts/       # output contract, policy templates (Phase B)
+│   ├── generate/      # GPU: model outputs -> JSONL       (Phase B)
+│   ├── analysis/      # CPU: JSONL -> metrics             (Phase B/E)
 │   ├── rewards/       # GRPO reward + unit tests          (Phase C)
 │   └── train/         # TRL GRPO training                 (Phase D)
-├── experiments/       # run configs and logs
-├── results/           # metrics, Pareto plots
+├── tests/             # scorer verification suite
+├── results/           # raw generations, metrics, plots
 ├── notes/             # daily research notes
 └── docs/              # proposal, design notes
 ```
 
 ## Stack
 
-Qwen2.5-1.5B-Instruct (0.5B for pipeline debugging) · TRL `GRPOTrainer` + LoRA · vLLM rollouts · [Berkeley Function Calling Leaderboard](https://gorilla.cs.berkeley.edu/leaderboard.html) · Colab Pro
+Qwen3-1.7B (native `<think>` / `<tool_call>` tokens, hybrid thinking mode) · TRL `GRPOTrainer` + LoRA · [Berkeley Function Calling Leaderboard](https://gorilla.cs.berkeley.edu/leaderboard.html) v4 · 4-bit NF4 locally, Colab for training
 
 ## Key references
 
@@ -96,7 +142,7 @@ Qwen2.5-1.5B-Instruct (0.5B for pipeline debugging) · TRL `GRPOTrainer` + LoRA 
 
 This project uses LLM assistance (Claude, Anthropic) under the conditions set by the AIDAMS program: every concept and line of code must be understood and explainable by the author, and assistance must be labeled in every deliverable.
 
-Assistance to date covers literature mapping and citation verification, proposal structuring, and experimental design discussion. Per-file and per-deliverable labeling is maintained in [`notes/`](notes/).
+Assistance to date covers literature mapping and citation verification, proposal structuring, experimental design discussion, and code drafting. Per-file and per-deliverable labeling is maintained in [`notes/`](notes/).
 
 ---
 
