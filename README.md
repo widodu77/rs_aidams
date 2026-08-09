@@ -49,29 +49,48 @@ Deliberately *not* measured as "items the model gets wrong" — that would be ci
 
 ## Early evidence
 
-Fixed-policy baselines on Qwen3-1.7B — 100 items per category, 500 per policy, greedy decoding:
+Fixed-policy baselines on Qwen3-1.7B, fp16, greedy — **all 1240 single-turn BFCL items, every policy**:
 
-| Category | never-think | always-think | | never tokens | always tokens |
-|---|---|---|---|---|---|
-| `simple` | 88.0% | **95.0%** | | 35 | 177 |
-| `multiple` | **93.0%** | 86.0% | | 36 | 205 |
-| `parallel` | 18.0% | **67.0%** | | 46 | 237 |
-| `parallel_multiple` | 29.0% | **70.0%** | | 57 | 362 |
-| `irrelevance` | 31.0% | **81.0%** | | 27 | 254 |
-| **overall** | 51.8% | **79.8%** | | 40 | 247 |
+| Category | never-think | always-think | adaptive prompt | | never tok | always tok |
+|---|---|---|---|---|---|---|
+| `simple` | **92.5%** | 89.8% | 91.2% | | 38 | 203 |
+| `multiple` | 93.5% | **95.0%** | 91.0% | | 37 | 213 |
+| `parallel` | 69.0% | **84.5%** | 83.5% | | 85 | 368 |
+| `parallel_multiple` | 62.5% | **81.5%** | 83.5% | | 96 | 418 |
+| `irrelevance` | 39.6% | 83.8% | **85.0%** | | 25 | 209 |
+| **overall** | 73.8% | 87.3% | **87.5%** | | 52 | 267 |
 
-Reasoning buys +28 points overall, for 6× the tokens. But **neither policy wins everywhere**: on `multiple` — one call, several candidate functions to choose between — thinking actively *hurts*, 93.0% against 86.0%. A fixed policy is leaving accuracy on the table in both directions, which is the entire premise of the project, visible in real data before any training has happened.
+Reasoning buys +13.5 points for 5.1× the tokens.
 
-**The base model already gates, and gates badly.** Told to always reason, Qwen3 refuses on 15% of items — it opens a `<think>` block and immediately closes it. Splitting the always-run by whether it actually reasoned:
+### You cannot get a gate by asking for one
 
-| Category | self-gated | accuracy | reasoned | accuracy |
-|---|---|---|---|---|
-| `simple` | 18 | 94.4% | 82 | 95.1% |
-| `parallel` | 36 | 47.2% | 64 | 78.1% |
+The `adaptive` column is the control that matters. Given a prompt where reasoning is explicitly *optional*, with both output shapes shown and neither privileged, the model reasons on **96.9%** of items and spends **more** tokens than always-think (287 vs 267) for statistically indistinguishable accuracy.
 
-On simple calls that gate is well calibrated — it skips reasoning precisely where reasoning wasn't buying anything (94.4% vs 95.1%). On `parallel`, the category where reasoning helps *most*, it fires on more than a third of items and those items score 30 points lower.
+The strongest rival hypothesis to "RL learned a gate" was always *"you didn't need RL — just ask."* That's now ruled out, before any training.
 
-The model chooses what to gate, so gated items are self-selected and may just be harder — the counterfactual run is pending. But a well-calibrated gate selects *easy* items, which is demonstrably what it does on `simple` and demonstrably not what it does on `parallel`. Either way this raises the bar: the comparison is not "learned gate vs no gate" but "learned gate vs the crude one Qwen3 already has".
+### What a perfect gate would buy
+
+Both policies ran on the same items, so every item is paired and the ceiling is computable:
+
+| | accuracy | mean tokens |
+|---|---|---|
+| never | 73.8% | 52 |
+| always | 87.3% | 267 |
+| **per-item oracle** | **91.2%** | **97** |
+
+- thinking **rescues** a failure on 216 items (17.4%)
+- thinking **destroys** a success on 49 items (4.0%)
+- neither policy is right on 109 items (8.8%) — so 91.2% is the hard ceiling
+
+The oracle peeks at ground truth, so it's a bound rather than a target. But it says where the prize is: **+3.9 accuracy points at 2.8× fewer tokens.** The cost axis, not the accuracy axis. And it thinks on **17.4%** of items — the number to watch during training, where near-0% or near-100% means collapse.
+
+### A methodological caution worth its own line
+
+Earlier baselines here were run with 4-bit NF4 quantization, forced by a 4 GB laptop GPU. Re-running at fp16 on the same items overturned two findings outright: an apparent inversion on `multiple` reversed, and an apparent self-gating behaviour (the model opening `<think>` and immediately closing it on 77/500 items) turned out to occur on **1** item at full precision.
+
+The cause was that quantization was crippling the *never* policy specifically — `parallel` went 18% → 69% — so reasoning was masking quantization damage and every "thinking helps" gap was inflated.
+
+**On a 1.7B model, NF4 didn't merely cost accuracy; it flipped the sign of the reasoning effect on two categories.** The full before/after is preserved in [`notes/2026-08-09.md`](notes/2026-08-09.md), superseded sections intact.
 
 ## Three ways this can end
 
@@ -90,7 +109,7 @@ There is no outcome where the project has nothing to report.
 | **A** | Per-sample BFCL scoring | done |
 | **B** | Output contract + fixed-prompt baselines | done |
 | **C** | Reward function + test suite | done |
-| **D** | GRPO training | pending |
+| **D** | GRPO training | scaffolded, not yet run |
 | **E** | Tradeoff curve + H1 analysis | pending |
 | **F** | Paper, demo, documentation | pending |
 
@@ -110,12 +129,17 @@ Run the scorer test suite:
 uv run pytest
 ```
 
-Generate baselines (GPU) and score them (CPU) as separate steps, so the expensive half runs once and the analysis can be re-derived freely:
+Generation (GPU) and scoring (CPU) are separate steps, so the expensive half runs once and the analysis can be re-derived freely.
+
+**Generation runs on Colab with vLLM** — open [`colab/generate_baselines.ipynb`](colab/generate_baselines.ipynb). All three policies over all 1240 items take ~36 minutes on a free T4. The local HF path (`generate.run_baseline`) still works but is ~25× slower: it batches statically, so every sequence steps until the longest in its batch finishes, wasting 2.36× the decode steps. It also needs 4-bit quantization to fit a 4 GB card, which [distorts the results](notes/2026-08-09.md).
+
+Scoring is CPU-only and runs locally against the full `bfcl-eval` install:
 
 ```bash
-uv run python -m generate.run_baseline --load-4bit --policy never --limit 100
-uv run python -m analysis.score_run results/raw/qwen3-1.7b_never.jsonl
+uv run python -m analysis.score_run results/raw/vllm/qwen3-1.7b_never.jsonl results/raw/vllm/qwen3-1.7b_always.jsonl results/raw/vllm/qwen3-1.7b_adaptive.jsonl --out results/baseline_metrics_vllm.json
 ```
+
+`results/raw/` holds the superseded NF4 generations; `results/raw/vllm/` holds the fp16 ones. Outputs from the two engines are never mixed in one table.
 
 Dependencies are pinned in `uv.lock` (committed deliberately — it is what makes the experiments reproducible). BFCL is pinned to `bfcl-eval==2026.3.23`, which ships the v4 data inside the package.
 
@@ -127,17 +151,20 @@ Dependencies are pinned in `uv.lock` (committed deliberately — it is what make
 │   ├── prompts/       # output contract, policy templates (Phase B)
 │   ├── generate/      # GPU: model outputs -> JSONL       (Phase B)
 │   ├── analysis/      # CPU: JSONL -> metrics             (Phase B/E)
-│   ├── rewards/       # GRPO reward + unit tests          (Phase C)
-│   └── train/         # TRL GRPO training                 (Phase D)
-├── tests/             # scorer verification suite
-├── results/           # raw generations, metrics, plots
+│   ├── rewards/       # GRPO reward + metric fns          (Phase C)
+│   └── train/         # dataset/split + TRL GRPO          (Phase D)
+├── colab/             # GPU notebooks: generation, training
+├── tests/             # scorer, reward and split suites   (61 tests)
+├── results/
+│   ├── raw/           # NF4 generations (superseded)
+│   └── raw/vllm/      # fp16 generations (current)
 ├── notes/             # daily research notes
 └── docs/              # proposal, design notes
 ```
 
 ## Stack
 
-Qwen3-1.7B (native `<think>` / `<tool_call>` tokens, hybrid thinking mode) · TRL `GRPOTrainer` + LoRA · [Berkeley Function Calling Leaderboard](https://gorilla.cs.berkeley.edu/leaderboard.html) v4 · 4-bit NF4 locally, Colab for training
+Qwen3-1.7B (native `<think>` / `<tool_call>` tokens, hybrid thinking mode) · TRL `GRPOTrainer` + LoRA · [Berkeley Function Calling Leaderboard](https://gorilla.cs.berkeley.edu/leaderboard.html) v4 · vLLM on Colab for generation and training, CPU locally for scoring and analysis
 
 ## Key references
 

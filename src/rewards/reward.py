@@ -174,4 +174,52 @@ def make_reward_fn(tokenizer, config: RewardConfig | None = None):
             )
         return rewards
 
+    # TRL logs each reward function under its __name__.
+    reward_fn.__name__ = "reward"
     return reward_fn
+
+
+def make_metric_fns(tokenizer):
+    """Logging-only functions with TRL's reward signature.
+
+    Registered alongside the real reward with a weight of 0.0, so TRL logs each
+    one per step without any of them influencing the gradient.
+
+    This exists because the primary scientific failure mode is collapse to
+    all-think or all-no-think, and collapse is invisible in the reward curve: a
+    policy that stopped reasoning and one that started emitting malformed calls
+    both flatten it. Think-rate has to be watched directly, from the first run —
+    and the fp16 oracle gives it a target, 17.4%. Near 0% or near 100% is
+    collapse, whatever the reward is doing.
+    """
+
+    def think_rate(prompts=None, completions=None, **columns) -> list[float]:
+        return [float(parse_model_output(c).did_think) for c in completions]
+
+    def correctness(prompts=None, completions=None, **columns) -> list[float]:
+        out = []
+        for completion, fns, gt, category in zip(
+            completions, columns["function"], columns["ground_truth"], columns["category"]
+        ):
+            parsed = parse_model_output(completion)
+            out.append(score_sample(fns, gt, parsed, category)["correct"])
+        return out
+
+    def format_rate(prompts=None, completions=None, **columns) -> list[float]:
+        return [float(parse_model_output(c).format_ok) for c in completions]
+
+    def mean_think_tokens(prompts=None, completions=None, **columns) -> list[float]:
+        out = []
+        for completion in completions:
+            parsed = parse_model_output(completion)
+            out.append(
+                float(len(tokenizer.encode(parsed.think, add_special_tokens=False)))
+                if parsed.think
+                else 0.0
+            )
+        return out
+
+    fns = [think_rate, correctness, format_rate, mean_think_tokens]
+    for fn in fns:
+        fn.__name__ = f"metric_{fn.__name__}"
+    return fns

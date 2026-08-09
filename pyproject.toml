@@ -21,6 +21,19 @@ dev = [
     "pytest>=9.1.1",
 ]
 
+# Training dependencies are a separate group, not base dependencies, and are
+# deliberately NOT installed locally. Phase D runs on Colab: a 4 GB card cannot
+# hold GRPO for a 1.7B model. Keeping them out of the base set means the local
+# environment stays a CPU scoring/analysis environment, and `datasets`' fsspec
+# pin does not get a vote on the packages the scorer depends on.
+#
+#     uv sync --group train      # only needed where training actually runs
+train = [
+    "trl>=0.27.0",
+    "peft>=0.19.0",
+    "datasets>=4.0.0",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

@@ -303,6 +303,47 @@ def test_trl_reward_fn_returns_aligned_floats(simple_item):
     assert rewards[0] > rewards[1] > rewards[2]
 
 
+def test_metric_fns_are_logging_only_and_report_the_collapse_signals(simple_item):
+    """Think-rate must be observable per step, at weight 0.0.
+
+    Collapse to all-think or all-no-think is the primary scientific failure mode
+    and it is invisible in the reward curve — a policy that stopped reasoning and
+    one that started emitting malformed calls both flatten it. These functions
+    carry TRL's reward signature so they can be registered alongside the real
+    reward and logged without touching the gradient.
+    """
+    from rewards.reward import make_metric_fns
+
+    sample = simple_item["sample"]
+    call = call_text(simple_item["func_name"], simple_item["args"])
+    completions = [call, "<think>hmm let me think</think>" + call, "garbage"]
+    columns = {
+        "function": [sample["function"]] * 3,
+        "ground_truth": [sample["ground_truth"]] * 3,
+        "category": ["simple_python"] * 3,
+    }
+
+    metrics = {fn.__name__: fn(None, completions, **columns) for fn in make_metric_fns(FakeTokenizer())}
+
+    assert metrics["metric_think_rate"] == [0.0, 1.0, 0.0]
+    assert metrics["metric_correctness"] == [1.0, 1.0, 0.0]
+    # Prose parses cleanly — it is simply not a call. That distinction is the
+    # format_ok / has_calls split established in Phase A.
+    assert metrics["metric_format_rate"] == [1.0, 1.0, 1.0]
+    assert metrics["metric_mean_think_tokens"] == [0.0, 4.0, 0.0]
+
+
+def test_reward_fn_has_a_stable_name():
+    """TRL logs reward functions under __name__; a collision would merge traces."""
+    from rewards.reward import make_metric_fns
+
+    names = [make_reward_fn(FakeTokenizer()).__name__] + [
+        fn.__name__ for fn in make_metric_fns(FakeTokenizer())
+    ]
+    assert names[0] == "reward"
+    assert len(set(names)) == len(names)
+
+
 def test_compute_reward_reports_every_component(simple_item):
     """The breakdown is the only way to diagnose a collapsed run.
 

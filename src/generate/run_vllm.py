@@ -64,6 +64,15 @@ def parse_args() -> argparse.Namespace:
         "no bfloat16, so vLLM falls back to float16 there automatically.",
     )
     p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    p.add_argument(
+        "--adapter",
+        default=None,
+        help="path to a LoRA adapter from `train.train_grpo`. Evaluating a trained policy "
+        "through this script rather than a separate eval path is deliberate: the trained "
+        "policy and the fixed-policy baselines it is compared against must be produced by "
+        "identical prompt construction, decoding and parsing, or the comparison is confounded.",
+    )
+    p.add_argument("--max-lora-rank", type=int, default=32, help="must be >= the adapter's r")
     p.add_argument("--out", default=None, help="output JSONL (default: results/raw/<model>_<policy>.jsonl)")
     p.add_argument("--resume", action="store_true", help="skip items already present in --out")
     return p.parse_args()
@@ -152,7 +161,16 @@ def main() -> None:
         dtype=args.dtype,
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=4096,
+        enable_lora=args.adapter is not None,
+        max_lora_rank=args.max_lora_rank,
     )
+
+    lora_request = None
+    if args.adapter:
+        from vllm.lora.request import LoRARequest
+
+        lora_request = LoRARequest("policy", 1, args.adapter)
+        print(f"adapter: {args.adapter}")
     # Greedy, matching the HF baselines: the comparison against the trained
     # policy must reflect the policy, not sampling noise.
     sampling = SamplingParams(temperature=0.0, max_tokens=args.max_new_tokens)
@@ -165,7 +183,7 @@ def main() -> None:
         for start in range(0, len(work), args.chunk_size):
             chunk = work[start : start + args.chunk_size]
             prompts = render_prompts(tokenizer, chunk, args.policy)
-            outputs = llm.generate(prompts, sampling)
+            outputs = llm.generate(prompts, sampling, lora_request=lora_request)
 
             for item, output in zip(chunk, outputs):
                 completion = output.outputs[0]
