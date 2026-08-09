@@ -259,3 +259,41 @@ item unanswerable, so prompt truncation was never something to want.
 **Lesson.** Fast-moving library APIs are worth introspecting rather than reading about, especially
 when the failure costs a GPU session. Two smoke-test failures in a row (this and entry 11) both
 landed before any GPU work — which is exactly what a five-step smoke test is for.
+
+---
+
+## 13 — An unused library broke LoRA by *raising* from a feature-detection check
+
+**Phase D · 2026-08-09**
+
+**Symptom.**
+
+```
+ImportError: Found an incompatible version of torchao.
+Found version 0.10.0, but only versions above 0.16.0 are supported
+```
+
+raised from `peft/tuners/lora/model.py` during `get_peft_model`.
+
+**Root cause.** Nothing in this project uses torchao — it is a quantization library, and LoRA here
+runs in fp16. But PEFT builds a LoRA layer by walking a list of *dispatchers*, one per backend
+(bitsandbytes, gptq, awq, hqq, torchao, …), asking each whether it applies. `dispatch_torchao`
+calls `is_torchao_available()`, and that helper **raises** on a too-old version rather than
+returning False. Colab preinstalls torchao 0.10.0. So an unused, unwanted, unreferenced backend
+aborted adapter injection.
+
+**Fix.** `pip uninstall -y torchao`. When the package is absent the same helper returns False
+cleanly and the dispatcher moves on. Uninstalling was preferred over upgrading: it is
+deterministic and cannot drag a new dependency into a torch install that is already delicately
+balanced (entry 10). The verify cell now asserts torchao's absence as a precondition.
+
+**Lesson.** A feature-detection predicate should answer the question it was asked. `is_X_available()`
+raising instead of returning False turns an optional backend into a hard dependency on *not*
+having an old version of it — a failure mode that is invisible from your own code and dependency
+list, because the offending package is neither imported nor requested. When a traceback names a
+library you have never heard of in this context, check whether you are on a plugin-discovery path
+before assuming you need it.
+
+This is the third distinct way the *preinstalled Colab environment* has broken a run (entries 10,
+12, 13). The pattern is worth naming: Colab is not a clean machine, and every install fights
+whatever was already there.
