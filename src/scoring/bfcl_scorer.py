@@ -30,7 +30,23 @@ from dataclasses import dataclass, field
 
 import bfcl_eval
 from bfcl_eval.constants.enums import Language
-from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
+
+# NOTE: `ast_checker` is imported lazily inside `score_sample`, not here.
+#
+# `import bfcl_eval` is free (0.002s, 38 modules — the package __init__ is
+# empty). Importing the checker costs 9.8s and pulls in 4322 modules, including
+# `qwen_agent` and `soundfile`, for the single boolean documented below.
+#
+# Deferring it means this module can be imported with only the BFCL *data*
+# present, i.e. `pip install --no-deps bfcl-eval==2026.3.23`. That matters for
+# GPU generation on Colab: the full install fights vLLM over the torch pin,
+# whereas generation never needs the checker at all — it only needs
+# `load_category` to read the dataset. This is the mitigation for the Colab
+# fragility risk flagged in Phase A.
+#
+# Scoring still runs locally on CPU against the full install, so the checker
+# path is unchanged; it just pays its import cost on first call instead of at
+# module load.
 
 DATA_DIR = os.path.join(os.path.dirname(bfcl_eval.__file__), "data")
 
@@ -180,6 +196,10 @@ def score_sample(
 
     if not parsed.calls:
         return {"correct": 0.0, "error_type": "parse:no_valid_call"}
+
+    # Deferred import: see the note at the top of this module. Python caches it,
+    # so only the first call pays.
+    from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
 
     result = ast_checker(
         functions,
