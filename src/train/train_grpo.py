@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 
@@ -136,7 +137,17 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--log-steps", type=int, default=1)
-    p.add_argument("--save-steps", type=int, default=50)
+    # Frequent enough that an interrupted Colab session loses minutes, not hours.
+    # At ~85 s/step a checkpoint every 10 steps caps the loss at ~14 minutes.
+    p.add_argument("--save-steps", type=int, default=10)
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue from the latest checkpoint in --output if one exists. Colab "
+        "sessions drop, and a run interrupted at step 4 of 50 otherwise starts over. "
+        "Safe to pass on a fresh run: with no checkpoint present it simply starts "
+        "from scratch.",
+    )
     return p.parse_args()
 
 
@@ -294,7 +305,19 @@ def main() -> None:
                 "--vllm-gpu-memory-utilization, or enable --vllm-sleep."
             )
 
-    trainer.train()
+    # `resume_from_checkpoint=True` raises if no checkpoint exists, so probe first
+    # and let --resume be harmless on a fresh run.
+    resume_from = None
+    if args.resume:
+        checkpoints = glob.glob(os.path.join(args.output, "checkpoint-*"))
+        if checkpoints:
+            resume_from = True
+            latest = max(checkpoints, key=lambda p: int(p.rsplit("-", 1)[-1]))
+            print(f"resuming from {latest}")
+        else:
+            print("--resume given but no checkpoint found; starting fresh")
+
+    trainer.train(resume_from_checkpoint=resume_from)
     trainer.save_model(args.output)
 
     # The log history carries the per-step metric traces; keeping it next to the
