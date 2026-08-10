@@ -77,6 +77,15 @@ def parse_args() -> argparse.Namespace:
         "this first on OOM.",
     )
     p.add_argument(
+        "--no-vllm-sleep",
+        action="store_true",
+        help="keep vLLM resident during the optimizer step. Off by default: in colocate "
+        "mode vLLM holds its own copy of the weights plus KV cache (~5 GiB at 0.35 on a "
+        "T4) for the whole run, and that is memory the loss pass needs. Sleep mode "
+        "offloads it between generation phases, trading a little wake/sleep overhead for "
+        "headroom that a 15 GiB card does not otherwise have.",
+    )
+    p.add_argument(
         "--vllm-max-model-len",
         type=int,
         default=2048,
@@ -92,14 +101,19 @@ def parse_args() -> argparse.Namespace:
     # context. Truncating a prompt would delete function schemas and make the
     # item unanswerable, so left-truncation was never something to want.
     p.add_argument("--learning-rate", type=float, default=1e-5)
-    # 8 x 2 = 16 completions per optimizer step, i.e. 2 prompts at group size 8.
-    # Deliberately modest: rollout generation dominates step time, and the
-    # proposal's plan is "a few hundred GRPO steps on a data subset with LoRA,
-    # rather than runs to convergence" — a clear trend across lambda is worth
-    # more for a 4-page paper than one converged number, and long runs are
-    # unreliable under Colab session limits regardless.
-    p.add_argument("--per-device-batch-size", type=int, default=8)
-    p.add_argument("--gradient-accumulation-steps", type=int, default=2)
+    # per_device_batch_size is the number of completions in ONE forward pass, and
+    # it is the single biggest lever on peak memory — not because of activations
+    # (gradient checkpointing handles those) but because of logits. TRL needs
+    # per-token log-probabilities, so the forward materialises
+    #     batch x completion_tokens x vocab
+    # = 8 x 768 x 151936 x 2 bytes ~ 1.9 GiB in fp16, computed twice (policy and
+    # reference). At 8 that OOMs a T4 alongside vLLM; at 2 it is ~0.5 GiB.
+    #
+    # 2 x 4 = 8 completions per optimizer step, i.e. one prompt at group size 8.
+    # Raising gradient_accumulation_steps buys more prompts per step (a less noisy
+    # gradient) at linear time cost, without touching peak memory.
+    p.add_argument("--per-device-batch-size", type=int, default=2)
+    p.add_argument("--gradient-accumulation-steps", type=int, default=4)
     p.add_argument("--lora-r", type=int, default=32)
     p.add_argument("--lora-alpha", type=int, default=64)
     p.add_argument("--temperature", type=float, default=1.0, help="rollouts must be sampled, not greedy")
@@ -111,6 +125,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    # Must be set before torch initialises CUDA. The rollout / loss alternation
+    # allocates and frees large, differently-shaped tensors every step (logits in
+    # particular), which fragments the caching allocator badly — the first OOM
+    # here reported 458 MiB reserved but unallocated. Expandable segments let the
+    # allocator grow a region rather than hunting for an exact-fit block.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     # Heavy imports live here so --help works without a GPU stack present.
     import torch
@@ -139,8 +160,14 @@ def main() -> None:
     print(
         f"{completions_per_step} completions/step "
         f"({completions_per_step // args.num_generations} prompts x {args.num_generations} rollouts), "
+        f"forward batch {args.per_device_batch_size}, "
         f"vllm={'on' if args.use_vllm else 'OFF — expect ~15 min/step'}"
+        f"{'' if not args.use_vllm else (', sleep=off' if args.no_vllm_sleep else ', sleep=on')}"
     )
+    # Peak memory is dominated by the logits tensor in the log-prob forward, so
+    # it is worth stating up front rather than discovering via OOM.
+    logits_gib = args.per_device_batch_size * args.max_completion_length * 151936 * 2 / 1024**3
+    print(f"peak logits tensor ~{logits_gib:.2f} GiB per forward (x2 for the reference pass)")
     if completions_per_step % args.num_generations:
         raise ValueError(
             f"per_device_batch_size * gradient_accumulation_steps "
@@ -208,6 +235,9 @@ def main() -> None:
         vllm_mode="colocate",
         vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
         vllm_max_model_length=args.vllm_max_model_len,
+        # Offload vLLM between generation phases so its ~5 GiB is not held while
+        # the loss pass needs it. Colocate on a 15 GiB card does not fit otherwise.
+        vllm_enable_sleep_mode=args.use_vllm and not args.no_vllm_sleep,
         reward_weights=reward_weights,
         logging_steps=args.log_steps,
         save_steps=args.save_steps,

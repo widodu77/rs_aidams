@@ -464,3 +464,101 @@ forming a hypothesis.
 Install-order dependencies have now accumulated to six steps, each justified by a different entry
 in this log. That the ordering is load-bearing is itself the finding: this environment is not
 reproducible by listing packages, only by listing packages *and* the sequence.
+
+---
+
+## 17 — The diagnostic cell was reporting the kernel, not the disk
+
+**Phase D · 2026-08-09**
+
+**Symptom.** After applying the entry-16 fix, the verify cell still reported
+
+```
+numpy     : 2.0.2
+torch     : 2.11.0+cu128 | CUDA 12.8
+```
+
+i.e. *neither* repair appeared to have happened — the numpy upgrade and the cu130 torch reinstall
+both looked like no-ops.
+
+**Root cause.** They may well have happened; the cell could not see it. The install cell began with
+`import torch` in order to read `torch.__version__` and build the pin for the cu130 reinstall. That
+single line loads torch **and numpy** into the kernel. Every pip command afterwards rewrites files
+on disk, but `sys.modules` keeps serving the already-imported modules for the life of the session.
+So the versions printed were whatever was loaded before the installs ran, and the failure was
+indistinguishable from pip having done nothing.
+
+Colab compounds this by only sometimes offering the RESTART SESSION button, which had been treated
+as the signal that a restart was needed.
+
+**Fix.** Three changes:
+
+- The install cell no longer imports anything heavy. `importlib.metadata.version("torch")` reads
+  package metadata **without importing the package**, so the kernel stays clean.
+- The cell ends with a check run in a **subprocess** (`!python -c "import numpy, torch; ..."`),
+  which gets a fresh interpreter and therefore reports what is genuinely on disk.
+- The restart is documented as mandatory rather than conditional on Colab offering it.
+
+Also pinned `numpy>=2.2` explicitly rather than a bare `-U`: `_blas_supports_fpe` arrived in numpy
+2.1, and an unqualified upgrade can be held at 2.0.x by another package's pin without saying so.
+
+**Lesson.** In a long-lived interpreter, "what is installed" and "what is imported" are different
+questions, and pip only answers the first. Any check meant to verify an installation has to run in
+a process that started *after* it — otherwise a successful install and a failed one look identical.
+This is the second time in two entries that the visible symptom pointed away from the cause
+(entry 16's traceback blamed `AutoModel`); both cost a full round trip, and both were cheap to make
+self-diagnosing once seen.
+
+---
+
+## 18 — OOM in the loss pass: the logits tensor, not the activations
+
+**Phase D · 2026-08-09**
+
+**Symptom.** vLLM colocate initialised, CUDA graphs captured, rollouts generated — then
+
+```
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 150.00 MiB.
+GPU 0 has a total capacity of 14.56 GiB of which 47.81 MiB is free.
+Of the allocated memory 13.78 GiB is allocated by PyTorch, with
+457.95 MiB reserved by PyTorch but unallocated.
+```
+
+raised from `_get_per_token_logps_and_entropies` → SDPA attention. Generation succeeded; the
+*loss* pass ran out.
+
+**Root cause.** Three tenants on a 14.56 GiB card at once:
+
+| | |
+|---|---|
+| vLLM colocate (own weights + KV cache, at 0.35) | ~5.1 GiB |
+| training model, fp16 | ~3.4 GiB |
+| **logits in the log-prob forward** | **~1.9 GiB, twice** |
+
+The last one is the part that is easy to miss. Gradient checkpointing was already on, so
+activations were not the problem — but GRPO needs *per-token log-probabilities*, and computing
+them materialises `batch x completion_tokens x vocab`. With Qwen3's 151936-token vocabulary that
+is `8 x 768 x 151936 x 2 bytes ≈ 1.9 GiB` in fp16, and TRL does it twice per step (policy, then
+reference with the adapter disabled). Nothing about that scales with model size, which is why "a
+1.7B model on a 15 GiB card" felt like it should be comfortable and was not.
+
+**Fix.** Three changes, in decreasing order of effect:
+
+1. `per_device_train_batch_size` 8 → **2**. This is the number of completions in one forward, so
+   it divides the logits tensor directly (~1.9 GiB → ~0.5 GiB). Group size stays 8 via
+   `gradient_accumulation_steps` 4, so the GRPO group is unchanged — only the forward is split.
+2. `vllm_enable_sleep_mode=True`. In colocate mode vLLM otherwise holds its ~5 GiB for the whole
+   run; sleeping offloads it between generation phases, which is exactly the window the loss pass
+   needs.
+3. `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, set before torch initialises CUDA. The OOM
+   reported 458 MiB reserved-but-unallocated: alternating rollouts and loss allocates large,
+   differently-shaped tensors every step, which fragments the caching allocator.
+
+The script now prints the predicted logits size at startup, so the dominant term is visible before
+the run rather than after it.
+
+**Lesson.** For RL on language models, peak memory is often set by `vocab_size`, not by parameter
+count — and the batch dimension that controls it is the *forward* batch, which can be decoupled
+from the algorithmic group size via gradient accumulation. Worth knowing that these two knobs look
+identical in a config file and do completely different things: one is a memory lever, the other is
+a statistics lever.
