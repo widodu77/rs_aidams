@@ -48,7 +48,13 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--eval-fraction", type=float, default=0.2)
     p.add_argument("--split-seed", type=int, default=0)
-    p.add_argument("--max-steps", type=int, default=200)
+    # 100 steps at the measured ~85 s/step is ~2.4 h per run, so a five-point
+    # lambda sweep fits in roughly 12 h across Colab sessions. At 200 it would be
+    # ~33 h including the gate, which free-tier sessions cannot absorb. The
+    # proposal already scopes this: "a few hundred GRPO steps on a data subset
+    # with LoRA, rather than runs to convergence" — for a 4-page paper a clear
+    # trend across lambda beats one converged point.
+    p.add_argument("--max-steps", type=int, default=100)
     p.add_argument(
         "--num-generations",
         type=int,
@@ -117,7 +123,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gradient-accumulation-steps", type=int, default=4)
     p.add_argument("--lora-r", type=int, default=32)
     p.add_argument("--lora-alpha", type=int, default=64)
-    p.add_argument("--temperature", type=float, default=1.0, help="rollouts must be sampled, not greedy")
+    p.add_argument(
+        "--temperature",
+        type=float,
+        default=1.2,
+        help="rollout sampling temperature. Above the usual 1.0 on purpose: the first "
+        "full run logged entropy at 0.05-0.13, and low rollout diversity means groups "
+        "agree, which means zero advantage and no gradient (frac_reward_zero_std hit 1.0 "
+        "on three of five steps). More diverse rollouts are the cheapest way to keep "
+        "groups informative. Affects training only — evaluation stays greedy, matching "
+        "how the fixed-policy baselines were generated.",
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--log-steps", type=int, default=1)
     p.add_argument("--save-steps", type=int, default=50)
@@ -259,6 +275,24 @@ def main() -> None:
         processing_class=tokenizer,
         peft_config=peft_config,
     )
+
+    # Headroom check before the first step. On a 15 GiB card this run has three
+    # tenants — vLLM's colocated engine, the training model, and the transient
+    # logits/backward allocations — and when it fails it does so as
+    # `CUBLAS_STATUS_ALLOC_FAILED on cublasCreate`, which does not look like OOM.
+    # Printing the free bytes turns that into a number that can be reasoned about.
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        print(
+            f"VRAM before training: {free / 2**30:.2f} GiB free of {total / 2**30:.2f} GiB "
+            f"({(total - free) / 2**30:.2f} GiB already held by vLLM + weights)"
+        )
+        if free < 2 * 2**30:
+            print(
+                "  WARNING: under 2 GiB free. The backward pass needs room for gradients "
+                "and a cuBLAS workspace. Lower --per-device-batch-size or "
+                "--vllm-gpu-memory-utilization, or enable --vllm-sleep."
+            )
 
     trainer.train()
     trainer.save_model(args.output)

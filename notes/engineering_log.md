@@ -609,3 +609,52 @@ actually scoped to circumstances that later changed.
 Practical version: when you write off an error as harmless, write down *why* it is harmless. Entry
 10 recorded "it appears in the shutdown path", and that note is what made this diagnosis take
 minutes instead of another blind round trip.
+
+---
+
+## 20 — Phase D runs. The missing library was there all along, under another name
+
+**Phase D · 2026-08-09**
+
+**Resolution of entry 19.** `pip install nvidia-cuda-nvrtc` alone did not fix it — the import still
+failed. The library *was* on disk, in `site-packages/nvidia/<component>/lib`, but shipped as
+`libnvrtc.so.13.x.y` with no bare `libnvrtc.so.13` soname, and its directory was not on
+`LD_LIBRARY_PATH`. torch preloads the CUDA libraries *it* needs, which is why nothing else had
+noticed. Creating the symlink and exporting the directory made `import vllm.cumem_allocator`
+succeed, and sleep mode with it.
+
+Both steps are now in the notebook: the install cell adds `nvidia-cuda-nvrtc`, and the verify cell
+creates the symlink, sets `LD_LIBRARY_PATH`, and tests the import in a subprocess before any GPU
+time is spent.
+
+**First complete GRPO run: 5/5 steps, adapter saved, no OOM.** The working shape on a 15 GiB T4 is
+`--use-vllm --vllm-sleep --per-device-batch-size 2 --gradient-accumulation-steps 4
+--num-generations 8 --max-completion-length 768`.
+
+**Measured throughput: ~85 s/step**, and it tracks completion length closely (38 s at a 190-token
+mean, 125 s at 476). Two consequences: 200 steps is ~4.7 h per run, so gate plus a six-point lambda
+sweep is ~33 h; and sleep mode reloads the model from disk on every wake, visible as a
+`Loading safetensors checkpoint shards` line per step, costing 4–12 s each.
+
+**Finding: lambda = 0 is the worst case for gradient signal, not the neutral one.**
+`frac_reward_zero_std` was 1.0 on three of five steps *even at group size 8* — steps 1, 4 and 5 had
+all eight rollouts correct, reward 1.2 across the board, `grad_norm 0`. With only correctness and
+format, the reward has very few distinct levels, and a model already at 87% accuracy saturates
+groups constantly.
+
+But look at the same steps' `metric_mean_think_tokens/std`: 57.4, 45.1, 11.1. The rollouts differ
+in reasoning length even when they agree on correctness. **So any lambda > 0 gives those groups
+non-zero variance and a usable gradient.** The go/no-go gate as specified in the proposal —
+correctness-only — is therefore the configuration least likely to learn, which inverts how it
+should be read: weak movement at lambda = 0 is expected and is not evidence that GRPO cannot work
+here.
+
+Also logged for later: `entropy` sits at 0.05–0.13 (low rollout diversity), and
+`sampling/importance_sampling_ratio` ranges 0.2–2.2 with a min of 0 on one step — the vLLM-versus-
+training-model numerics gap that TRL corrects for, worth watching if training behaves oddly.
+
+**Lesson.** A dependency can be installed, present on disk, and still unusable — packaging, soname
+and loader path are three separate things. And the scientific lesson is bigger than the
+engineering one: instrumenting `frac_reward_zero_std` turned "the gate did not move much" from a
+result into an artefact that was predicted in advance. That metric existed only because collapse
+was named as the primary failure mode before any training ran.
