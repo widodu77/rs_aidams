@@ -562,3 +562,50 @@ count — and the batch dimension that controls it is the *forward* batch, which
 from the algorithmic group size via gradient accumulation. Worth knowing that these two knobs look
 identical in a config file and do completely different things: one is a memory lever, the other is
 a statistics lever.
+
+---
+
+## 19 — A warning I dismissed as cosmetic turned out to be load-bearing
+
+**Phase D · 2026-08-09**
+
+**Symptom.**
+
+```
+pydantic_core.ValidationError: 1 validation error for ModelConfig
+  Value error, cumem allocator is not supported on current platform.
+```
+
+raised while constructing vLLM inside `GRPOTrainer`, after enabling sleep mode (entry 18, fix 2).
+
+**Root cause.** Sleep mode offloads vLLM's weights and KV cache via its **cumem allocator**, and
+that allocator needs `libnvrtc.so.13` — the CUDA 13 runtime-compilation library, which the cu130
+torch wheel does not install (it brings `libcudart.so.13` but not NVRTC).
+
+The same missing library had already appeared, twice, during baseline generation:
+
+```
+ImportError: libnvrtc.so.13 ... from vllm.cumem_allocator import
+```
+
+I assessed it as harmless at the time and that assessment was correct *for generation* — it
+appeared once for an optional Hopper kernel library and once in vLLM's shutdown path, after all
+records had been written. Entry 10 says so explicitly. But "harmless in the shutdown path of a
+generation run" does not generalise to "harmless", and the moment sleep mode needed the same
+allocator it became fatal at construction.
+
+**Fix.** Inverted the flag: sleep mode is now opt-in (`--vllm-sleep`) rather than default, so a
+missing NVRTC cannot break a run that never needed it. Memory headroom comes from
+`--per-device-batch-size 2` instead, which was always the safer lever — it shrinks the logits
+tensor directly and depends on nothing. Sleep mode remains available for anyone who first gets
+`import vllm.cumem_allocator` working.
+
+**Lesson.** This is entry 14's shape again, from the other direction. There, a fix correct for one
+environment was carried into another where its premise failed. Here, a *diagnosis* correct for one
+context — "this error is cosmetic" — was carried into another where the same missing dependency was
+required. Both are the same underlying mistake: treating a conclusion as unconditional when it was
+actually scoped to circumstances that later changed.
+
+Practical version: when you write off an error as harmless, write down *why* it is harmless. Entry
+10 recorded "it appears in the shutdown path", and that note is what made this diagnosis take
+minutes instead of another blind round trip.

@@ -77,13 +77,14 @@ def parse_args() -> argparse.Namespace:
         "this first on OOM.",
     )
     p.add_argument(
-        "--no-vllm-sleep",
+        "--vllm-sleep",
         action="store_true",
-        help="keep vLLM resident during the optimizer step. Off by default: in colocate "
-        "mode vLLM holds its own copy of the weights plus KV cache (~5 GiB at 0.35 on a "
-        "T4) for the whole run, and that is memory the loss pass needs. Sleep mode "
-        "offloads it between generation phases, trading a little wake/sleep overhead for "
-        "headroom that a 15 GiB card does not otherwise have.",
+        help="offload vLLM's weights and KV cache between generation phases, freeing ~5 GiB "
+        "for the loss pass. OPT-IN, because it requires vLLM's cumem allocator, which needs "
+        "`libnvrtc.so.13` — not installed by the cu130 torch wheel. Without it vLLM fails at "
+        "construction with 'cumem allocator is not supported on current platform'. Enable "
+        "only after `pip install nvidia-cuda-nvrtc` succeeds and `import vllm.cumem_allocator` "
+        "works. Reducing --per-device-batch-size is the safer lever.",
     )
     p.add_argument(
         "--vllm-max-model-len",
@@ -162,7 +163,7 @@ def main() -> None:
         f"({completions_per_step // args.num_generations} prompts x {args.num_generations} rollouts), "
         f"forward batch {args.per_device_batch_size}, "
         f"vllm={'on' if args.use_vllm else 'OFF — expect ~15 min/step'}"
-        f"{'' if not args.use_vllm else (', sleep=off' if args.no_vllm_sleep else ', sleep=on')}"
+        f"{'' if not args.use_vllm else (', sleep=on' if args.vllm_sleep else ', sleep=off')}"
     )
     # Peak memory is dominated by the logits tensor in the log-prob forward, so
     # it is worth stating up front rather than discovering via OOM.
@@ -235,9 +236,8 @@ def main() -> None:
         vllm_mode="colocate",
         vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
         vllm_max_model_length=args.vllm_max_model_len,
-        # Offload vLLM between generation phases so its ~5 GiB is not held while
-        # the loss pass needs it. Colocate on a 15 GiB card does not fit otherwise.
-        vllm_enable_sleep_mode=args.use_vllm and not args.no_vllm_sleep,
+        # Opt-in: needs vLLM's cumem allocator, which needs libnvrtc.so.13.
+        vllm_enable_sleep_mode=args.use_vllm and args.vllm_sleep,
         reward_weights=reward_weights,
         logging_steps=args.log_steps,
         save_steps=args.save_steps,
