@@ -414,3 +414,53 @@ the instruments even when the run succeeds.
 Also worth noting: entries 9, 10 and 15 are one problem wearing three hats. Static batching cost
 2.36x in generation, then ~24x in training; and each time vLLM was the fix, the CUDA ABI issue came
 along with it.
+
+---
+
+## 16 — `--index-url` replaces PyPI, and took numpy down with it
+
+**Phase D · 2026-08-09**
+
+**Symptom.** A 40-frame traceback ending in
+
+```
+ModuleNotFoundError: Could not import module 'AutoModel'.
+Are this object's requirements defined correctly?
+```
+
+whose actual cause was four exceptions deeper:
+
+```
+AttributeError: module 'numpy._core._multiarray_umath'
+                has no attribute '_blas_supports_fpe'
+```
+
+**Root cause.** The fix from entry 10 — `pip install --force-reinstall torch==X --index-url
+https://download.pytorch.org/whl/cu130` — has a side effect I did not account for. **`--index-url`
+*replaces* PyPI rather than adding to it**, unlike `--extra-index-url`. Combined with
+`--force-reinstall`, which reinstalls the entire dependency tree rather than just the named
+package, pip pulled every one of torch's dependencies from the PyTorch index, which serves older
+pinned versions. numpy was downgraded underneath compiled extensions in transformers and vLLM that
+were built against a newer one, and a C-level attribute vanished.
+
+It did not bite in the generation notebook because less was installed there for the downgrade to
+break.
+
+**Fix.** Restore numpy from PyPI explicitly after the torch repair
+(`pip install -U numpy --index-url https://pypi.org/simple`), and reorder so `trl`/`peft`/
+`datasets` install *after* the torch repair rather than before — that way they resolve their
+compiled dependencies against the torch that will actually be used. The verify cell now imports
+and prints numpy first, and imports `AutoModelForCausalLM` explicitly, so a recurrence shows up as
+one line instead of a mystery.
+
+**Lesson.** Two. First, `--force-reinstall` plus `--index-url` is a much bigger hammer than it
+looks: one replaces the whole package universe, the other reinstalls the whole dependency tree, and
+together they silently rewrite packages you never named. Second, and more general — **the error
+message named `AutoModel`, which had nothing to do with the problem.** Python's lazy-import
+machinery re-raises through several layers, so the top of a traceback is often the last thing to
+notice a failure rather than the first thing to cause it. Read to the bottom of the chain before
+forming a hypothesis.
+
+Install-order dependencies have now accumulated to six steps, each justified by a different entry
+in this log. That the ordering is load-bearing is itself the finding: this environment is not
+reproducible by listing packages, only by listing packages *and* the sequence.
