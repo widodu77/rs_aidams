@@ -700,3 +700,45 @@ without another run.
 
 Bigger hardware is not automatically more headroom. It is more headroom only if every consumer is
 expressed in absolute terms or re-tuned deliberately.
+
+---
+
+## 22 — The fix was correct and did not apply: a stale variable in the kernel
+
+**Phase D · 2026-08-12**
+
+**Symptom.** After pushing the entry-21 fix and re-opening the notebook, the run printed
+
+```
+forward batch 8, vllm=on, sleep=off
+peak logits tensor ~1.74 GiB per forward
+```
+
+— the *old* configuration — and OOM'd again in the same place. The corrected values were in the
+notebook on disk and in git.
+
+**Root cause.** The hardware settings were computed in one notebook cell and passed to the training
+script as a `$FLAGS` string. Re-opening the notebook from GitHub replaced the **cells**, but
+`FLAGS` was already bound in the running kernel from the previous version, and the training cell
+consumed that binding. Editing the definition of a variable does not rebind it in a live session.
+
+This is entry 17 in a different costume. There it was `sys.modules` holding an old package; here it
+is a plain Python name. Both are the same failure: **a long-lived interpreter serving state from
+before the fix, in a way that is indistinguishable from the fix not working.**
+
+**Fix.** Deleted the mechanism rather than the symptom. `train_grpo.py` now resolves
+`per_device_batch_size`, `gradient_accumulation_steps`, `vllm_gpu_memory_utilization` and sleep
+mode itself, from `torch.cuda.get_device_capability()` in the process that will use them, and
+prints what it chose at startup. All four remain overridable; only unset ones are filled in.
+
+The notebook passes no hardware flags at all now, so there is no second place for the truth to live
+and nothing left to go stale.
+
+**Lesson.** When configuration has to match the environment, compute it *in the process that runs
+in that environment*. Passing it across a boundary — notebook cell to subprocess, kernel to script
+— creates a copy, and copies go stale silently. The general form: prefer deriving state over
+propagating it, especially anywhere a long-lived session is involved.
+
+Three separate failures now (17, 21, 22) have come from configuration and environment disagreeing
+across a process or session boundary. Every one of them cost a full GPU cycle to diagnose, and
+every one was invisible in the error message.

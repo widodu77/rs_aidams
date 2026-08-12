@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--vllm-gpu-memory-utilization",
         type=float,
-        default=0.35,
+        default=None,
         help="fraction of VRAM reserved for vLLM in colocate mode. It holds its own copy "
         "of the weights (3.2 GiB for Qwen3-1.7B fp16), so this budget minus that is the "
         "KV cache. Too high starves training; too low starves the rollout batch. Lower "
@@ -85,7 +85,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--vllm-sleep",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="offload vLLM's weights and KV cache between generation phases, freeing ~5 GiB "
         "for the loss pass. OPT-IN, because it requires vLLM's cumem allocator, which needs "
         "`libnvrtc.so.13` — not installed by the cu130 torch wheel. Without it vLLM fails at "
@@ -120,8 +121,8 @@ def parse_args() -> argparse.Namespace:
     # 2 x 4 = 8 completions per optimizer step, i.e. one prompt at group size 8.
     # Raising gradient_accumulation_steps buys more prompts per step (a less noisy
     # gradient) at linear time cost, without touching peak memory.
-    p.add_argument("--per-device-batch-size", type=int, default=2)
-    p.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    p.add_argument("--per-device-batch-size", type=int, default=None)
+    p.add_argument("--gradient-accumulation-steps", type=int, default=None)
     p.add_argument("--lora-r", type=int, default=32)
     p.add_argument("--lora-alpha", type=int, default=64)
     p.add_argument(
@@ -151,6 +152,62 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def resolve_hardware_defaults(args, torch) -> None:
+    """Fill in memory-shaped arguments from the GPU actually present.
+
+    These live here rather than in the notebook on purpose. They were previously
+    computed in a notebook cell and passed in as a `$FLAGS` string, which failed
+    silently the first time the notebook was updated: re-opening it replaced the
+    *cells* but not the `FLAGS` variable already bound in the kernel, so a stale
+    T4 configuration was handed to an L4 and OOM'd. Resolving inside the process
+    that uses them removes that whole class of error — the script is correct
+    standalone, and there is no second place for the truth to live.
+
+    Every value is overridable; only unset ones are filled in.
+
+    The numbers themselves are measured, not assumed:
+
+    - `vllm_gpu_memory_utilization` is a fraction of *total* VRAM, so it does not
+      port across cards. At the T4-tuned 0.35 an L4 hands vLLM 7.7 GiB instead of
+      5.1 — the extra capacity gets eaten by the component that was squeezed. vLLM
+      needs ~3.4 GiB for its own weights plus KV cache, so 0.25 of 22 GiB is ample.
+    - `per_device_batch_size` sets the logits tensor
+      (`batch x completion_tokens x 151936`, computed twice per step), which is the
+      dominant term. 4 gives ~0.87 GiB on a big card; 2 gives ~0.43 on a small one.
+    - Sleep mode is needed only where vLLM's reservation cannot coexist with the
+      backward pass, i.e. on the 15 GiB card.
+
+    `gradient_accumulation_steps` is derived so the GRPO group is exactly one
+    prompt's worth of rollouts on either path — the algorithm stays identical
+    across hardware and only memory behaviour changes.
+    """
+    if not torch.cuda.is_available():
+        return
+
+    capability = torch.cuda.get_device_capability(0)
+    big_card = capability[0] >= 8  # Ampere and newer: bf16, FlashAttention, more VRAM
+
+    if args.per_device_batch_size is None:
+        args.per_device_batch_size = 4 if big_card else 2
+    if args.gradient_accumulation_steps is None:
+        args.gradient_accumulation_steps = max(
+            1, args.num_generations // args.per_device_batch_size
+        )
+    if args.vllm_gpu_memory_utilization is None:
+        args.vllm_gpu_memory_utilization = 0.25 if big_card else 0.35
+    if args.vllm_sleep is None:
+        args.vllm_sleep = not big_card
+
+    total = torch.cuda.mem_get_info()[1] / 2**30
+    print(
+        f"{torch.cuda.get_device_name(0)}  {total:.1f} GiB  sm_{capability[0]}{capability[1]}  "
+        f"-> forward batch {args.per_device_batch_size}, "
+        f"accum {args.gradient_accumulation_steps}, "
+        f"vllm mem {args.vllm_gpu_memory_utilization}, "
+        f"sleep {'on' if args.vllm_sleep else 'off'}"
+    )
+
+
 def main() -> None:
     args = parse_args()
 
@@ -170,6 +227,8 @@ def main() -> None:
 
     from rewards.reward import RewardConfig, make_metric_fns, make_reward_fn
     from train.dataset import build_datasets
+
+    resolve_hardware_defaults(args, torch)
 
     os.makedirs(args.output, exist_ok=True)
 
