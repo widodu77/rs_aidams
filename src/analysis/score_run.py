@@ -39,6 +39,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("runs", nargs="+", help="JSONL files from generate.run_baseline")
     p.add_argument("--tokenizer", default="Qwen/Qwen3-1.7B")
     p.add_argument("--max-new-tokens", type=int, default=768, help="cap used at generation time")
+    p.add_argument(
+        "--split-manifest",
+        default=None,
+        help="restrict scoring to one half of a train/eval split. The fixed-policy "
+        "baselines cover all 1240 items, so this is how they get compared against a "
+        "trained policy on the held-out set only — without it the baseline numbers "
+        "include items the policy trained on.",
+    )
+    p.add_argument("--split", choices=["train", "eval"], default="eval")
     p.add_argument("--out", default="results/baseline_metrics.json")
     return p.parse_args()
 
@@ -59,6 +68,15 @@ def main() -> None:
     args = parse_args()
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
     records = load_records(args.runs)
+
+    if args.split_manifest:
+        from train.dataset import load_manifest
+
+        train_ids, eval_ids = load_manifest(args.split_manifest)
+        keep = eval_ids if args.split == "eval" else train_ids
+        before = len(records)
+        records = [r for r in records if (r["category"], r["id"]) in keep]
+        print(f"split={args.split}: {len(records)} of {before} records")
 
     # Ground truth is looked up per category, cached so each file is read once.
     samples: dict[str, dict] = {}

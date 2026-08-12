@@ -73,6 +73,16 @@ def parse_args() -> argparse.Namespace:
         "identical prompt construction, decoding and parsing, or the comparison is confounded.",
     )
     p.add_argument("--max-lora-rank", type=int, default=32, help="must be >= the adapter's r")
+    p.add_argument(
+        "--split-manifest",
+        default=None,
+        help="path to a split_manifest.json written by train.train_grpo. Restricts "
+        "generation to one half of the split. Required when evaluating a trained "
+        "policy: scoring it on items it trained on would measure memorisation, and "
+        "the fixed-policy baselines have to be restricted to the same subset or the "
+        "comparison is against different data.",
+    )
+    p.add_argument("--split", choices=["train", "eval"], default="eval")
     p.add_argument("--out", default=None, help="output JSONL (default: results/raw/<model>_<policy>.jsonl)")
     p.add_argument("--resume", action="store_true", help="skip items already present in --out")
     return p.parse_args()
@@ -146,6 +156,15 @@ def main() -> None:
 
     completed = load_completed(out_path) if args.resume else set()
     work = build_work_items(args.categories, args.limit)
+
+    if args.split_manifest:
+        from train.dataset import load_manifest
+
+        train_ids, eval_ids = load_manifest(args.split_manifest)
+        keep = eval_ids if args.split == "eval" else train_ids
+        before = len(work)
+        work = [w for w in work if (w["category"], w["sample"]["id"]) in keep]
+        print(f"split={args.split}: {len(work)} of {before} items")
     if completed:
         before = len(work)
         work = [w for w in work if (w["category"], w["sample"]["id"]) not in completed]
