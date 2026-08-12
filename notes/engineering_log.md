@@ -658,3 +658,45 @@ and loader path are three separate things. And the scientific lesson is bigger t
 engineering one: instrumenting `frac_reward_zero_std` turned "the gate did not move much" from a
 result into an artefact that was predicted in advance. That metric existed only because collapse
 was named as the primary failure mode before any training ran.
+
+---
+
+## 21 — A 47% bigger GPU produced *less* free memory
+
+**Phase D · 2026-08-12**
+
+**Symptom.** Moved from a 15 GiB T4 to a 22 GiB L4 (Colab Pro) and immediately OOM'd in the
+backward pass, on a configuration that had been running fine on the smaller card.
+
+```
+T4:  VRAM before training:  7.65 GiB free of 14.56  ( 6.91 GiB held)
+L4:  VRAM before training:  7.86 GiB free of 22.03  (14.17 GiB held)
+```
+
+A 7.5 GiB larger card yielded **0.2 GiB more free memory**.
+
+**Root cause.** Two compounding mistakes, both mine.
+
+1. **`vllm_gpu_memory_utilization` is a fraction of *total*, not an absolute budget.** Keeping it at
+   the T4-tuned 0.35 handed vLLM `0.35 x 22.03 = 7.7 GiB` instead of 5.1 — the extra capacity was
+   silently consumed by the very component that had been squeezed.
+2. **I raised the forward batch from 2 to 8 at the same time**, on the reasoning that a bigger card
+   could afford it. That took the logits tensor from ~0.43 GiB back to ~1.74, doubled across the
+   policy and reference passes.
+
+Together they consumed the entire upgrade and then some.
+
+**Fix.** On compute capability >= 8: forward batch 4 (logits ~0.87 GiB), and
+`--vllm-gpu-memory-utilization 0.25`, which is 5.5 GiB — enough for vLLM's own 3.4 GiB of weights
+plus ~2.1 GiB of KV cache, ample for 8 sequences at `max_model_len 2048`. The GRPO group stays at 8
+on both hardware paths via gradient accumulation, so the algorithm is identical and only the memory
+behaviour differs.
+
+**Lesson.** Fractional resource settings do not port across hardware — they *look* like they scale
+correctly and in fact re-tune themselves in the wrong direction. Worse, I changed two variables at
+once while moving to new hardware, so the first OOM carried no information about which one was
+responsible; only the `VRAM before training` line added in entry 18 made the split diagnosable
+without another run.
+
+Bigger hardware is not automatically more headroom. It is more headroom only if every consumer is
+expressed in absolute terms or re-tuned deliberately.
