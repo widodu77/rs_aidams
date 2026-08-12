@@ -109,7 +109,7 @@ There is no outcome where the project has nothing to report.
 | **A** | Per-sample BFCL scoring | done |
 | **B** | Output contract + fixed-prompt baselines | done |
 | **C** | Reward function + test suite | done |
-| **D** | GRPO training | scaffolded, not yet run |
+| **D** | GRPO training | gate run; λ sweep in progress |
 | **E** | Tradeoff curve + H1 analysis | pending |
 | **F** | Paper, demo, documentation | pending |
 
@@ -158,7 +158,7 @@ Dependencies are pinned in `uv.lock` (committed deliberately — it is what make
 ├── results/
 │   ├── raw/           # NF4 generations (superseded)
 │   └── raw/vllm/      # fp16 generations (current)
-├── notes/             # daily research notes + engineering_log.md
+├── notes/             # daily research notes + engineering_log.md (20 entries)
 └── docs/              # proposal, design notes
 ```
 
