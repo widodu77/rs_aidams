@@ -1,0 +1,111 @@
+{
+  "summary": {
+    "never": {
+      "n": 248,
+      "accuracy": 0.7137096774193549,
+      "tokens": 51.350806451612904,
+      "think_tokens": 0.0,
+      "think_rate": 0.0
+    },
+    "always": {
+      "n": 248,
+      "accuracy": 0.8951612903225806,
+      "tokens": 264.10887096774195,
+      "think_tokens": 190.88709677419354,
+      "think_rate": 0.9838709677419355
+    },
+    "adaptive prompt": {
+      "n": 248,
+      "accuracy": 0.8911290322580645,
+      "tokens": 280.6491935483871,
+      "think_tokens": 196.0483870967742,
+      "think_rate": 0.967741935483871
+    },
+    "trained \u03bb=0.05": {
+      "n": 248,
+      "accuracy": 0.8911290322580645,
+      "tokens": 238.86693548387098,
+      "think_tokens": 168.35887096774192,
+      "think_rate": 0.9879032258064516
+    },
+    "trained \u03bb=0.25": {
+      "n": 248,
+      "accuracy": 0.8830645161290323,
+      "tokens": 230.95564516129033,
+      "think_tokens": 165.95564516129033,
+      "think_rate": 0.9959677419354839
+    },
+    "trained \u03bb=0.5": {
+      "n": 248,
+      "accuracy": 0.8911290322580645,
+      "tokens": 223.98387096774192,
+      "think_tokens": 150.75,
+      "think_rate": 0.9838709677419355
+    },
+    "trained \u03bb=1.0": {
+      "n": 248,
+      "accuracy": 0.8870967741935484,
+      "tokens": 230.6008064516129,
+      "think_tokens": 160.27822580645162,
+      "think_rate": 0.9879032258064516
+    },
+    "trained \u03bb=2.0": {
+      "n": 248,
+      "accuracy": 0.8911290322580645,
+      "tokens": 234.69354838709677,
+      "think_tokens": 165.94354838709677,
+      "think_rate": 0.9919354838709677
+    },
+    "oracle": {
+      "n": 248,
+      "accuracy": 0.9274193548387096,
+      "tokens": 99.49193548387096,
+      "think_tokens": NaN,
+      "think_rate": NaN
+    }
+  },
+  "think_rate_by_category": {
+    "adaptive prompt": {
+      "simple_python": 1.0,
+      "multiple": 0.95,
+      "parallel": 0.925,
+      "parallel_multiple": 0.975,
+      "irrelevance": 0.9583333333333334
+    },
+    "trained \u03bb=0.05": {
+      "simple_python": 0.9875,
+      "multiple": 1.0,
+      "parallel": 0.975,
+      "parallel_multiple": 0.975,
+      "irrelevance": 1.0
+    },
+    "trained \u03bb=0.25": {
+      "simple_python": 1.0,
+      "multiple": 1.0,
+      "parallel": 1.0,
+      "parallel_multiple": 0.975,
+      "irrelevance": 1.0
+    },
+    "trained \u03bb=0.5": {
+      "simple_python": 1.0,
+      "multiple": 1.0,
+      "parallel": 0.975,
+      "parallel_multiple": 0.95,
+      "irrelevance": 0.9791666666666666
+    },
+    "trained \u03bb=1.0": {
+      "simple_python": 1.0,
+      "multiple": 1.0,
+      "parallel": 0.975,
+      "parallel_multiple": 0.975,
+      "irrelevance": 0.9791666666666666
+    },
+    "trained \u03bb=2.0": {
+      "simple_python": 1.0,
+      "multiple": 1.0,
+      "parallel": 1.0,
+      "parallel_multiple": 0.975,
+      "irrelevance": 0.9791666666666666
+    }
+  }
+}

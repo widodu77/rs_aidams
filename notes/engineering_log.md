@@ -742,3 +742,24 @@ propagating it, especially anywhere a long-lived session is involved.
 Three separate failures now (17, 21, 22) have come from configuration and environment disagreeing
 across a process or session boundary. Every one of them cost a full GPU cycle to diagnose, and
 every one was invisible in the error message.
+
+**Addendum, Phase E setup.** It happened a fourth time, in the third distinct flavour: the notebook
+was re-opened from GitHub (updating the *cells*) but section 2's `git pull` cell was not re-run, so
+`/content/rs_aidams` stayed on the previous commit. The evaluation loop then emitted five identical
+`unrecognized arguments: --split-manifest` errors and copied nothing — which reads like a Drive
+failure rather than a stale checkout.
+
+So the three update paths in this setup are genuinely independent, and that is worth stating
+plainly because it keeps catching us:
+
+| what | updates when |
+|---|---|
+| notebook cells | the notebook is re-opened from GitHub |
+| repo code | section 2's `git pull` cell is re-run |
+| loaded modules and variables | the session is restarted |
+
+The eval cell now probes `run_vllm --help` for the flag it is about to use and fails with an
+instruction naming the exact cell to re-run. General principle, and the one to carry forward:
+**where several things must be in sync and only some of them update automatically, make the
+consumer assert what it needs rather than assume it.** A cheap up-front check converts a confusing
+downstream symptom into a one-line diagnosis.

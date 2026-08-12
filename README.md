@@ -109,8 +109,8 @@ There is no outcome where the project has nothing to report.
 | **A** | Per-sample BFCL scoring | done |
 | **B** | Output contract + fixed-prompt baselines | done |
 | **C** | Reward function + test suite | done |
-| **D** | GRPO training | gate run; λ sweep in progress |
-| **E** | Tradeoff curve + H1 analysis | pending |
+| **D** | GRPO training | sweep run; two implementation faults found, fixes pending |
+| **E** | Tradeoff curve + H1 analysis | frontier computed; H1 pending |
 | **F** | Paper, demo, documentation | pending |
 
 A and B are measurement. C and D are the contribution. E is where we find out whether it worked.
