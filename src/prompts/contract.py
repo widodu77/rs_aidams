@@ -83,20 +83,10 @@ POLICIES = tuple(POLICY_INSTRUCTIONS)
 # need: True lets the model open a `<think>` block itself, False makes the
 # template close an empty one so the model starts already outside it.
 #
-# This replaced an earlier prefill mechanism built for Qwen2.5-1.5B-Instruct,
-# which could not do the job at all. `<think>` is not in Qwen2.5's vocabulary
-# (three tokens) and the model was never trained to emit it — that convention
-# arrived with Qwen3/QwQ. Prefilling the opening tag produced well-formed
-# `<think>` blocks, but the model then emitted `<|im_end|>` immediately after
-# `</think>` and never reached the tool call. Feeding its own completed
-# reasoning back as context produced an empty continuation: once `</think>` is
-# present, Qwen2.5 considers the turn finished. It does one thing per turn — it
-# reasons, or it calls, never both.
-#
-# In Qwen3 `<think>` (151667) and `</think>` (151668) are native single tokens
-# and reason-then-call is a trained behaviour, which is why the base model
-# changed. For a project about *when* to think, the base model has to be able to
-# represent thinking at all.
+# This replaced a prefill mechanism built for Qwen2.5-1.5B-Instruct, which
+# cannot reason and call in the same turn: `<think>` is not in its vocabulary
+# and the turn ends at `</think>`. A study of *when* to think needs a model that
+# can represent thinking at all — see engineering log entry 4.
 CHAT_TEMPLATE_KWARGS = {
     "always": {"enable_thinking": True},
     "never": {"enable_thinking": False},

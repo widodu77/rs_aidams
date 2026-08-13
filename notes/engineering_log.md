@@ -1009,3 +1009,40 @@ the stride is 1 rather than accepting anything. This is the third consecutive en
 had to be made *less* convenient to be worth anything (entry 24: real types; entry 25: ignore
 `num_generations`; entry 26: 3-D logprobs and mode-dependent lengths). **A fake built from your
 assumptions tests your assumptions, not your code.**
+
+---
+
+## 28 — A logged column that verifies the whole scoring path
+
+**Phase E · 2026-08-13**
+
+**Symptom.** None — this is a measurement that turned out to be worth more than expected, recorded
+because the technique generalises.
+
+**What happened.** The five paired-rollout runs share a seed, so step 1 of each sees the *same*
+prompt and the *same* eight completions before any weight update. Only λ differs. That makes the
+first logged row a controlled five-point probe of the reward function, for free, with no extra
+compute:
+
+    logged reward mean  ==  w_correct*1 + w_format*1 - λ*96.12/768
+
+matched at λ ∈ {0.05, 0.25, 0.5, 1.0, 2.0} to four significant figures — 1.1940/1.1690/1.1370/
+1.0750/0.9497 against 1.1937/1.1687/1.1374/1.0748/0.94968.
+
+**Why that is worth noting.** That single column exercises the entire scoring path end to end on
+real generations: parser, BFCL AST checker, think-token count, weight assembly, TRL's aggregation.
+The unit tests cover each piece on fixtures; this covers the composition on live data, and it
+costs nothing because the numbers were already being logged. **A seeded sweep over one reward
+coefficient is an end-to-end assertion on the reward, and the first step is where it is cleanest.**
+
+**Lesson.** Look for the controlled comparison already sitting in logs you are keeping anyway.
+Identical seeds across a hyperparameter sweep mean step 1 is a controlled experiment in that
+hyperparameter, and any quantity that should depend on it analytically becomes a checkable
+prediction rather than a plot to eyeball.
+
+**Second-order lesson, and the one with teeth.** Extending the same reasoning past step 1 produced
+the actual finding: `reward_std` is *also* predicted analytically (`λ·std(think)/768`), which means
+λ cancels out of the normalised advantage entirely. Verified across 344 cancelling steps to
+9.7e-06. The measurement began as a sanity check on the reward and ended as the explanation for
+why the whole experiment reads flat — see `notes/2026-08-13.md`. Sanity checks are worth running
+past the point where they have passed.
