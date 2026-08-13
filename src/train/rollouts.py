@@ -61,15 +61,44 @@ def make_paired_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str
     if not 0.0 < think_fraction < 1.0:
         raise ValueError("think_fraction must be strictly between 0 and 1")
 
-    def render(prompts, enable_thinking: bool) -> list[list[int]]:
+    def token_ids(messages, enable_thinking: bool) -> list[int]:
+        """Tokenise one conversation, normalising what the tokenizer hands back.
+
+        `apply_chat_template(..., tokenize=True)` does not have a stable return
+        type across transformers versions: v5 returns a `BatchEncoding` (a dict)
+        rather than a flat list, and a single conversation may also come back
+        nested one level. Passing a dict on to vLLM fails far downstream inside
+        its input validator with
+
+            TypeError: '>' not supported between instances of 'str' and 'int'
+
+        because `max()` over a dict returns its largest *key*. Normalising here,
+        and asserting the element type, keeps that failure local and legible.
+        """
         kwargs = chat_template_kwargs(policy)
         kwargs["enable_thinking"] = enable_thinking
-        return [
-            tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True, **kwargs
+        out = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=False,
+            **kwargs,
+        )
+        if isinstance(out, dict):  # BatchEncoding, despite return_dict=False
+            out = out["input_ids"]
+        if out and isinstance(out[0], list):  # nested single conversation
+            out = out[0]
+        out = list(out)
+        if not all(isinstance(token, int) for token in out):
+            offender = next(t for t in out if not isinstance(t, int))
+            raise TypeError(
+                "chat template produced non-integer token ids "
+                f"(saw {type(offender).__name__}); vLLM needs list[int]."
             )
-            for messages in prompts
-        ]
+        return out
+
+    def render(prompts, enable_thinking: bool) -> list[list[int]]:
+        return [token_ids(messages, enable_thinking) for messages in prompts]
 
     def rollout_func(prompts, trainer) -> dict:
         group_size = getattr(trainer, "num_generations", None) or trainer.args.num_generations

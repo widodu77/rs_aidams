@@ -804,3 +804,42 @@ keeping.
 Also worth recording as a debugging habit: the reported exception was three layers downstream of
 the fault. `FileNotFoundError` on an output artefact almost always means "the thing that writes it
 failed", and the useful error is upstream.
+
+---
+
+## 24 — The test fake had the wrong types, so it tested nothing
+
+**Phase D · 2026-08-13**
+
+**Symptom.** Second paired-rollout attempt, dying inside vLLM's input validator:
+
+```
+File "vllm/v1/engine/input_processor.py", line 492, in _validate_model_input
+    if max_input_id > max(tokenizer.max_token_id, model_vocab_size - 1):
+TypeError: '>' not supported between instances of 'str' and 'int'
+```
+
+**Root cause.** `tokenizer.apply_chat_template(..., tokenize=True)` does not have a stable return
+type across transformers versions. On v5 it returns a **`BatchEncoding`** — a dict — rather than a
+flat `list[int]`. vLLM validates prompts with `max(prompt_token_ids)`, and `max()` over a dict
+returns its largest *key*, so the comparison became `"input_ids" > 151935`.
+
+**Fix.** Normalise in `rollouts.py`: pass `return_dict=False`, unwrap a dict if one arrives anyway,
+flatten a nested single conversation, and then **assert every element is an int** with a message
+naming the actual offending type. That converts a failure five frames deep inside vLLM into one
+that says what is wrong and where.
+
+**The part actually worth recording.** Nine tests covered this code and all of them passed. The
+fake tokenizer returned `[mode, "prompt name"]` — an int and a **string** — because encoding the
+prompt's identity as a string was convenient for assertions. So the fake never produced the type
+the real contract requires, and every test exercised a shape that could not occur in production
+while missing the one that did.
+
+**A fake whose types do not match the real contract tests nothing.** The tests now use integer ids
+throughout, plus three tokenizer doubles for the shapes transformers actually returns (flat list,
+dict, nested) and one returning strings to prove the guard fires.
+
+This is the second time in two entries that a type change several layers away caused the failure
+(entry 23: conversational prompts changed the *completion* type). Both were invisible at the call
+site, and both crossed a library boundary where the type is decided by a branch in someone else's
+code.

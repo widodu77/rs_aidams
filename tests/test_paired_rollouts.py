@@ -18,12 +18,42 @@ from train.rollouts import make_paired_rollout_func
 
 
 class FakeTokenizer:
-    """Records which thinking mode each render used, in the token ids themselves."""
+    """Returns list[int], like the real tokenizer must.
 
-    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=True, **kwargs):
-        marker = 1 if kwargs.get("enable_thinking") else 0
-        # Encode (prompt identity, mode) so downstream assertions can recover both.
-        return [marker, messages[0]["content"]]
+    Token ids encode (mode, prompt identity) so assertions can recover both:
+    `[mode, item_index]`. An earlier version of this fake returned
+    `[mode, "prompt name"]` — an int and a *string* — which let a real bug
+    through: transformers v5 hands back a `BatchEncoding`, vLLM called `max()`
+    on it, got a dict key, and died with an unrelated-looking TypeError. A fake
+    whose types do not match the real contract tests nothing.
+    """
+
+    def apply_chat_template(
+        self, messages, tokenize=True, add_generation_prompt=True, return_dict=False, **kwargs
+    ):
+        mode = 1 if kwargs.get("enable_thinking") else 0
+        return [mode, int(messages[0]["content"])]
+
+
+class DictReturningTokenizer(FakeTokenizer):
+    """transformers v5 shape: a BatchEncoding-like dict rather than a flat list."""
+
+    def apply_chat_template(self, messages, **kwargs):
+        return {"input_ids": super().apply_chat_template(messages, **kwargs)}
+
+
+class NestedTokenizer(FakeTokenizer):
+    """Some versions wrap a single conversation one level deep."""
+
+    def apply_chat_template(self, messages, **kwargs):
+        return [super().apply_chat_template(messages, **kwargs)]
+
+
+class StringTokenIdTokenizer:
+    """The exact shape that broke the first paired run, for the guard to catch."""
+
+    def apply_chat_template(self, messages, **kwargs):
+        return ["input_ids", "attention_mask"]
 
 
 class FakeVLLM:
@@ -50,8 +80,9 @@ class FakeTrainer:
         self.vllm_generation = FakeVLLM()
 
 
-def messages(name):
-    return [{"role": "user", "content": name}]
+def messages(index):
+    """Prompt identity as an int, so token ids can stay list[int]."""
+    return [{"role": "user", "content": str(index)}]
 
 
 def test_every_group_contains_both_modes():
@@ -63,7 +94,7 @@ def test_every_group_contains_both_modes():
     trainer = FakeTrainer(group_size=8)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    out = fn([messages("a"), messages("b")], trainer)
+    out = fn([messages(0), messages(1)], trainer)
     completions = out["completion_ids"]
 
     for start in range(0, len(completions), 8):
@@ -80,13 +111,13 @@ def test_groups_are_contiguous_and_prompt_pure():
     trainer = FakeTrainer(group_size=8)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    out = fn([messages("a"), messages("b"), messages("c")], trainer)
+    out = fn([messages(0), messages(1), messages(2)], trainer)
     completions = out["completion_ids"]
 
     assert len(completions) == 3 * 8
     for index, start in enumerate(range(0, len(completions), 8)):
         names = {c[1] for c in completions[start : start + 8]}
-        assert names == {"abc"[index]}, f"group {index} mixes prompts: {names}"
+        assert names == {index}, f"group {index} mixes prompts: {names}"
 
 
 def test_all_returned_fields_stay_aligned():
@@ -94,7 +125,7 @@ def test_all_returned_fields_stay_aligned():
     trainer = FakeTrainer(group_size=4)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    out = fn([messages("a"), messages("b")], trainer)
+    out = fn([messages(0), messages(1)], trainer)
 
     assert len(out["prompt_ids"]) == len(out["completion_ids"]) == len(out["logprobs"])
     for prompt, completion in zip(out["prompt_ids"], out["completion_ids"]):
@@ -110,7 +141,7 @@ def test_split_sizes(group_size, fraction, expected_think):
     trainer = FakeTrainer(group_size=group_size)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=fraction)
 
-    out = fn([messages("a")], trainer)
+    out = fn([messages(0)], trainer)
     modes = [c[0] for c in out["completion_ids"]]
 
     assert len(modes) == group_size
@@ -122,7 +153,7 @@ def test_both_modes_are_actually_requested():
     trainer = FakeTrainer(group_size=8)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    fn([messages("a")], trainer)
+    fn([messages(0)], trainer)
 
     assert len(trainer.vllm_generation.calls) == 2
     modes = [call[0][0][0] for call in trainer.vllm_generation.calls]
@@ -139,4 +170,30 @@ def test_degenerate_fractions_are_rejected():
     # Valid fraction, but too small for the group size to leave any direct rollouts.
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.99)
     with pytest.raises(ValueError, match="one mode only"):
-        fn([messages("a")], FakeTrainer(group_size=2))
+        fn([messages(0)], FakeTrainer(group_size=2))
+
+
+def test_tokenizer_return_shapes_are_normalised():
+    """transformers does not have a stable return type for apply_chat_template.
+
+    v5 returns a BatchEncoding (dict); some versions nest a single conversation
+    one level. Both must come back as flat list[int], because vLLM validates
+    `max(prompt_token_ids)` and a dict silently yields its largest *key*.
+    """
+    for tokenizer in (FakeTokenizer(), DictReturningTokenizer(), NestedTokenizer()):
+        fn = make_paired_rollout_func(tokenizer, think_fraction=0.5)
+        out = fn([messages(0)], FakeTrainer(group_size=4))
+        for ids in out["prompt_ids"]:
+            assert all(isinstance(t, int) for t in ids), f"{type(tokenizer).__name__} leaked non-ints"
+
+
+def test_non_integer_token_ids_fail_locally():
+    """Guard converts a far-downstream vLLM TypeError into a legible one.
+
+    The first paired run died inside vLLM's input validator with
+    "'>' not supported between instances of 'str' and 'int'", which says nothing
+    about chat templating.
+    """
+    fn = make_paired_rollout_func(StringTokenIdTokenizer(), think_fraction=0.5)
+    with pytest.raises(TypeError, match="non-integer token ids"):
+        fn([messages(0)], FakeTrainer(group_size=4))
