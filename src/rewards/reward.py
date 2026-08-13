@@ -43,6 +43,30 @@ def _decode(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
+def completion_text(completion) -> str:
+    """Normalise a TRL completion to raw text.
+
+    TRL's shape depends on whether the *prompt* column was conversational. With a
+    pre-rendered string prompt it passes the completion through as a string; with
+    a message-list prompt — which the paired-rollout path requires, since a
+    rendered string cannot be re-templated per thinking mode — it wraps the
+    completion as `[{"role": "assistant", "content": ...}]`.
+
+    Handling both here keeps the reward identical across the two training paths.
+    Without it the parser silently receives a list, finds no tool call in it, and
+    scores every rollout zero — a wrong-answers failure rather than a crash.
+    """
+    if isinstance(completion, str):
+        return completion
+    if isinstance(completion, list):  # conversational: [{"role": ..., "content": ...}]
+        return "".join(
+            turn.get("content") or "" for turn in completion if isinstance(turn, dict)
+        )
+    if isinstance(completion, dict):
+        return completion.get("content") or ""
+    raise TypeError(f"unrecognised completion shape: {type(completion).__name__}")
+
+
 @dataclass(frozen=True)
 class RewardConfig:
     """Weights for the composite reward.
@@ -182,7 +206,7 @@ def make_reward_fn(tokenizer, config: RewardConfig | None = None):
         for completion, fns, gt, category in zip(
             completions, functions, ground_truth, categories
         ):
-            parsed = parse_model_output(completion)
+            parsed = parse_model_output(completion_text(completion))
             think_tokens = count(parsed.think) if parsed.think else 0
             rewards.append(
                 compute_reward(
@@ -211,24 +235,24 @@ def make_metric_fns(tokenizer):
     """
 
     def think_rate(prompts=None, completions=None, **columns) -> list[float]:
-        return [float(parse_model_output(c).did_think) for c in completions]
+        return [float(parse_model_output(completion_text(c)).did_think) for c in completions]
 
     def correctness(prompts=None, completions=None, **columns) -> list[float]:
         out = []
         for completion, fns, gt, category in zip(
             completions, columns["function"], columns["ground_truth"], columns["category"]
         ):
-            parsed = parse_model_output(completion)
+            parsed = parse_model_output(completion_text(completion))
             out.append(score_sample(_decode(fns), _decode(gt), parsed, category)["correct"])
         return out
 
     def format_rate(prompts=None, completions=None, **columns) -> list[float]:
-        return [float(parse_model_output(c).format_ok) for c in completions]
+        return [float(parse_model_output(completion_text(c)).format_ok) for c in completions]
 
     def mean_think_tokens(prompts=None, completions=None, **columns) -> list[float]:
         out = []
         for completion in completions:
-            parsed = parse_model_output(completion)
+            parsed = parse_model_output(completion_text(completion))
             out.append(
                 float(len(tokenizer.encode(parsed.think, add_special_tokens=False)))
                 if parsed.think

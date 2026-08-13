@@ -763,3 +763,44 @@ instruction naming the exact cell to re-run. General principle, and the one to c
 **where several things must be in sync and only some of them update automatically, make the
 consumer assert what it needs rather than assume it.** A cheap up-front check converts a confusing
 downstream symptom into a one-line diagnosis.
+
+---
+
+## 23 — Making the prompt conversational silently changed the completion type
+
+**Phase D · 2026-08-13**
+
+**Symptom.** The paired-rollout sweep died, and the visible error was a red herring:
+
+```
+FileNotFoundError: 'runs/paired_lam0_05/log_history.json'
+```
+
+That file is only written *after* `trainer.train()` returns, so its absence means training failed;
+the real error was in the `!python` output above it.
+
+**Root cause.** Paired rollouts need the prompt kept as a message list rather than a pre-rendered
+string, because a rendered string cannot be re-templated per thinking mode. But TRL branches on
+`is_conversational({"prompt": prompts[0]})` when it decodes completions: with a string prompt it
+passes the completion through as a string, and with a message-list prompt it wraps it as
+`[{"role": "assistant", "content": ...}]`.
+
+The reward functions call `parse_model_output(completion)`, which runs a regex. A regex over a
+`list` raises `TypeError`, so training died on the first reward computation.
+
+**Fix.** A `completion_text()` normaliser at the TRL boundary in `rewards/reward.py`, handling
+string, message-list and single-dict forms. `compute_reward` and `score_completion` keep taking
+raw text, so the direct-call path and the standard training path are untouched. Two tests pin it,
+including one asserting that conversational and plain completions produce *identical* rewards.
+
+**Lesson.** Changing the type of one field changed the type of a different field, several layers
+away, through a branch inside the library. Nothing in the paired-rollout change mentioned
+completions at all. Worth noting how lucky the crash was: had `parse_model_output` been tolerant of
+lists it would have found no tool call, scored every rollout zero, and produced a training run that
+learned from nothing while looking healthy. **A strict parser converted a silent wrong-answers bug
+into a loud one** — the same property that made the `format_ok`/`has_calls` split (entry 3) worth
+keeping.
+
+Also worth recording as a debugging habit: the reported exception was three layers downstream of
+the fault. `FileNotFoundError` on an output artefact almost always means "the thing that writes it
+failed", and the useful error is upstream.

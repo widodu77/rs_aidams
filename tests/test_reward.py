@@ -368,6 +368,44 @@ def test_trl_reward_fn_accepts_json_encoded_columns(simple_item):
     assert correctness(None, completions, **encoded) == [1.0, 1.0]
 
 
+def test_trl_reward_fn_accepts_conversational_completions(simple_item):
+    """TRL wraps completions as messages when the PROMPT column is conversational.
+
+    The paired-rollout path requires conversational prompts (a pre-rendered string
+    cannot be re-templated per thinking mode), which silently changes the shape
+    TRL hands the reward: `[{"role": "assistant", "content": ...}]` instead of a
+    string. Unhandled, the parser finds no tool call inside a list and scores every
+    rollout zero — no crash, just a training run that learns from nothing.
+    """
+    from rewards.reward import make_metric_fns
+
+    sample = simple_item["sample"]
+    call = call_text(simple_item["func_name"], simple_item["args"])
+    plain = [call, "<think>hmm</think>" + call]
+    conversational = [[{"role": "assistant", "content": c}] for c in plain]
+    columns = {
+        "function": [sample["function"]] * 2,
+        "ground_truth": [sample["ground_truth"]] * 2,
+        "category": ["simple_python"] * 2,
+    }
+
+    reward_fn = make_reward_fn(FakeTokenizer())
+    assert reward_fn(None, conversational, **columns) == reward_fn(None, plain, **columns)
+
+    think_rate = next(f for f in make_metric_fns(FakeTokenizer()) if "think_rate" in f.__name__)
+    assert think_rate(None, conversational, **columns) == [0.0, 1.0]
+
+
+def test_completion_text_rejects_unknown_shapes():
+    from rewards.reward import completion_text
+
+    assert completion_text("plain") == "plain"
+    assert completion_text([{"role": "assistant", "content": "x"}]) == "x"
+    assert completion_text({"role": "assistant", "content": "y"}) == "y"
+    with pytest.raises(TypeError):
+        completion_text(42)
+
+
 def test_reward_fn_has_a_stable_name():
     """TRL logs reward functions under __name__; a collision would merge traces."""
     from rewards.reward import make_metric_fns
