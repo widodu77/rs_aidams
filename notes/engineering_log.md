@@ -850,6 +850,13 @@ code.
 
 **Phase D · 2026-08-13**
 
+> **⚠ ROOT CAUSE CORRECTED — see entry 27.** The symptom and the arithmetic below are accurate, but
+> the diagnosis is not: `generate()` does *not* ignore `num_generations`. It uses it as a stride to
+> undo the sampler's duplication. The real fault was mine one level up — the prompts were already
+> repeated, so the "expected 64" in my own error message was itself wrong. The fix described here
+> (repeat prompts, ask for one apiece) made the count agree with a wrong expectation and pushed the
+> failure two layers downstream. Left in place because the reasoning error is the instructive part.
+
 **Symptom.** Third paired attempt, and this time the error was ours and said so:
 
 ```
@@ -929,3 +936,76 @@ overriding a hook, read the default implementation first; its body is the actual
 **Note on the recurring `FileNotFoundError`.** It has now appeared in four consecutive failures and
 has never once been the bug. `log_history.json` is written after `trainer.train()` returns, so its
 absence is a *tautology* of failure, not a cause. Same as entry 23. Scroll up.
+
+---
+
+## 27 — The prompts were already repeated: one misreading, four failed runs
+
+**Phase D · 2026-08-13**
+
+**Symptom.** Fifth paired attempt. Generation succeeded, logprobs were the right shape, and the run
+died in the reward layer:
+
+```
+ValueError: The reward function 'metric_think_rate' returned 64 rewards,
+but 8 were expected (one per prompt-completion pair).
+```
+
+**Root cause.** `rollout_func` receives prompts that TRL has *already duplicated*. The trainer builds
+its sampler as
+
+```python
+RepeatSampler(mini_repeat_count=self.num_generations, ...)
+```
+
+so each dataset item is emitted `num_generations` times **contiguously** before the batch is
+assembled. At `num_generations=8` a batch of 8 rows is one item repeated eight times, and the
+function owes back exactly `len(prompts)` completions. I read `prompts` as a list of *distinct*
+items and returned `len(prompts) * num_generations` — 64 where 8 were wanted.
+
+`vllm_generation.generate` then makes sense for the first time:
+
+```python
+# Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and
+# generate num_generations outputs for each one.
+ordered_set_of_prompt_ids = all_prompts[::num_generations]
+```
+
+`num_generations` is a **stride** for undoing that duplication, not a request for N samples. Entry
+25 concluded it was "ignored" because passing 4 with 8 rows returned 8 completions — but that is
+stride-4 de-duplication followed by `n=4` per unique prompt, which is 8. The parameter worked
+perfectly; my model of the input was wrong.
+
+**Fix.** The implementation collapsed rather than grew. Mode is now a property of *position within a
+group*: rows `0..n_think-1` of each block of `num_generations` are rendered with thinking enabled,
+the rest disabled, and a **single** `generate(rendered, None, 1)` returns one completion per row.
+Stride 1 means no de-duplication, which is required here because rows within a group are
+deliberately no longer identical. The two-call interleaving machinery is gone entirely.
+
+Two new guards, both for silent failures rather than crashes: the batch must be a multiple of
+`num_generations`, and every block must actually be one repeated item (compared against
+`prompts[index - position]`). If TRL ever stopped repeating in place, mode assignment by position
+would pair a thinking rollout on one item with a direct rollout on *another*, and the resulting
+gradient would be wrong with nothing anywhere to indicate it.
+
+**Lesson — the expensive one.** This single misreading caused entries 24, 25, 26 and this one. Each
+time I fixed the error in front of me and pushed the same wrong assumption one layer deeper, where
+it re-emerged wearing different clothes: a vLLM validator TypeError, a completion miscount, a tensor
+shape mismatch, a reward count. **Four symptoms, one cause, four round trips of GPU time** — and the
+tell was visible from the second failure onward, because 16, 64 and 8 all differ by exactly the
+factor `num_generations`. *When consecutive errors are off by the same factor, stop fixing the
+error and go verify the quantity that factor names.*
+
+**Lesson — the one that generalises.** The proximate mistake was reading the hook's *docstring*
+("receives the list of prompts allocated to the current process") instead of its *callers*. Nothing
+in that sentence says the list contains duplicates. Reading `_get_train_sampler` — twenty lines,
+with an ASCII diagram of exactly this layout in a comment — would have settled it before the first
+run. The default implementation, and the code that constructs its inputs, is the contract.
+
+**Lesson — on tests.** All nine tests passed at every one of the four failures, because every test
+fed *unique* prompts. The suite encoded my misunderstanding faithfully. It now has a `repeated()`
+helper used in every case so the fixture shape matches the sampler's output, and the fake asserts
+the stride is 1 rather than accepting anything. This is the third consecutive entry where the fake
+had to be made *less* convenient to be worth anything (entry 24: real types; entry 25: ignore
+`num_generations`; entry 26: 3-D logprobs and mode-dependent lengths). **A fake built from your
+assumptions tests your assumptions, not your code.**

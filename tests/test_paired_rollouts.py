@@ -1,10 +1,17 @@
 """Verification of paired rollouts.
 
 The dangerous failure here is silent. TRL identifies a GRPO group by *consecutive
-positions* in the returned batch, so if interleaving is off by one the trainer
+positions* in the returned batch, so if mode assignment is off by one the trainer
 happily computes advantages across rollouts belonging to different prompts. There
 is no error, no shape mismatch — just a quietly wrong gradient. These tests pin
 the ordering and the counts.
+
+Every test feeds prompts the way TRL actually does: `RepeatSampler` is
+constructed with `mini_repeat_count=num_generations`, so each item arrives
+already repeated `num_generations` times, contiguously. Reading that batch as a
+list of *distinct* prompts is what broke the first four paired runs, and a test
+suite that passes unique prompts would keep the bug alive, so `repeated()` below
+is used everywhere rather than a bare list.
 
 A fake vLLM backend stands in for `trainer.vllm_generation`: the real one needs a
 GPU, and what needs testing is the bookkeeping around it, not vLLM itself.
@@ -57,14 +64,15 @@ class StringTokenIdTokenizer:
 
 
 class FakeVLLM:
-    """Returns exactly one completion per input prompt.
+    """Returns exactly one completion per input row, in order.
 
-    This matches what TRL's real `vllm_generation.generate` was observed to do:
-    asking for `num_generations=4` still produced one completion per prompt. The
-    rollout function therefore repeats prompts itself and asks for one apiece, so
-    this fake deliberately **ignores** `num_generations` — a fake that honoured it
-    would hide the very bug that broke the first paired run (16 completions
-    produced where 64 were required).
+    That is what the real backend does when called with `num_generations=1`:
+    the argument is a *stride* used to undo the sampler's duplication
+    (`prompts[::num_generations]`, then `n` outputs per unique prompt), so a
+    stride of 1 takes every row as given. This fake asserts the stride is 1,
+    because any larger value would silently drop rows — at stride 8 it would
+    keep one thinking row per group and discard all four direct ones, which is
+    precisely the collapse paired rollouts exist to prevent.
 
     Completion lengths differ by mode, as they do in reality: reasoned rollouts
     run hundreds of tokens, direct ones a few dozen. Logprobs are returned in
@@ -77,6 +85,10 @@ class FakeVLLM:
         self.calls = []
 
     def generate(self, prompt_ids, images, num_generations, profiler=None):
+        assert num_generations == 1, (
+            f"stride {num_generations} would slice prompts[::{num_generations}] and "
+            "discard rows that were deliberately rendered in different modes"
+        )
         self.calls.append((list(prompt_ids), num_generations))
         prompts, completions, logprobs = [], [], []
         for position, ids in enumerate(prompt_ids):
@@ -108,6 +120,34 @@ def messages(index):
     return [{"role": "user", "content": str(index)}]
 
 
+def repeated(indices, group_size):
+    """The batch shape TRL actually delivers: each item repeated in place.
+
+    `RepeatSampler(mini_repeat_count=num_generations)` yields
+    `[0, 0, 0, 0, 1, 1, 1, 1, ...]`, not `[0, 1, 0, 1, ...]`.
+    """
+    return [messages(index) for index in indices for _ in range(group_size)]
+
+
+def test_returns_exactly_one_completion_per_prompt_row():
+    """The contract that four consecutive failed runs got wrong.
+
+    Prompts arrive pre-repeated, so the answer owed back is `len(prompts)` — not
+    `len(prompts) * num_generations`. Overshooting by that factor is invisible
+    until the reward functions are asked for one value per completion, where it
+    surfaces as "returned 64 rewards, but 8 were expected".
+    """
+    trainer = FakeTrainer(group_size=8)
+    fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
+    prompts = repeated([0], group_size=8)
+
+    out = fn(prompts, trainer)
+
+    assert len(out["completion_ids"]) == len(prompts) == 8
+    assert len(out["prompt_ids"]) == len(prompts)
+    assert len(out["logprobs"]) == len(prompts)
+
+
 def test_every_group_contains_both_modes():
     """The whole point: no group may be single-mode.
 
@@ -117,7 +157,7 @@ def test_every_group_contains_both_modes():
     trainer = FakeTrainer(group_size=8)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    out = fn([messages(0), messages(1)], trainer)
+    out = fn(repeated([0, 1], group_size=8), trainer)
     completions = out["completion_ids"]
 
     for start in range(0, len(completions), 8):
@@ -134,7 +174,7 @@ def test_groups_are_contiguous_and_prompt_pure():
     trainer = FakeTrainer(group_size=8)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    out = fn([messages(0), messages(1), messages(2)], trainer)
+    out = fn(repeated([0, 1, 2], group_size=8), trainer)
     completions = out["completion_ids"]
 
     assert len(completions) == 3 * 8
@@ -148,7 +188,7 @@ def test_all_returned_fields_stay_aligned():
     trainer = FakeTrainer(group_size=4)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    out = fn([messages(0), messages(1)], trainer)
+    out = fn(repeated([0, 1], group_size=4), trainer)
 
     assert len(out["prompt_ids"]) == len(out["completion_ids"]) == len(out["logprobs"])
     for prompt, completion in zip(out["prompt_ids"], out["completion_ids"]):
@@ -164,23 +204,28 @@ def test_split_sizes(group_size, fraction, expected_think):
     trainer = FakeTrainer(group_size=group_size)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=fraction)
 
-    out = fn([messages(0)], trainer)
+    out = fn(repeated([0], group_size), trainer)
     modes = [c[0] for c in out["completion_ids"]]
 
     assert len(modes) == group_size
     assert sum(modes) == expected_think
 
 
-def test_both_modes_are_actually_requested():
-    """One vLLM call per mode, with enable_thinking set differently."""
+def test_both_modes_are_actually_rendered():
+    """One generate call, whose rows carry both chat-template variants.
+
+    Two calls were not needed: mode is a property of how each row is rendered,
+    and rendering is per row, so a single batched call covers both.
+    """
     trainer = FakeTrainer(group_size=8)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    fn([messages(0)], trainer)
+    fn(repeated([0], group_size=8), trainer)
 
-    assert len(trainer.vllm_generation.calls) == 2
-    modes = [call[0][0][0] for call in trainer.vllm_generation.calls]
-    assert set(modes) == {0, 1}, "both chat-template variants must be rendered"
+    assert len(trainer.vllm_generation.calls) == 1
+    sent, _ = trainer.vllm_generation.calls[0]
+    assert len(sent) == 8
+    assert [ids[0] for ids in sent] == [1, 1, 1, 1, 0, 0, 0, 0]
 
 
 def test_degenerate_fractions_are_rejected():
@@ -193,7 +238,33 @@ def test_degenerate_fractions_are_rejected():
     # Valid fraction, but too small for the group size to leave any direct rollouts.
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.99)
     with pytest.raises(ValueError, match="one mode only"):
-        fn([messages(0)], FakeTrainer(group_size=2))
+        fn(repeated([0], group_size=2), FakeTrainer(group_size=2))
+
+
+def test_ragged_batch_is_rejected():
+    """Mode is assigned by position, which assumes whole groups.
+
+    A batch that is not a multiple of num_generations means the sampler's
+    repetition no longer lines up, and every position-based assumption in this
+    function is void.
+    """
+    fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
+    with pytest.raises(ValueError, match="not a multiple"):
+        fn(repeated([0], group_size=8)[:5], FakeTrainer(group_size=8))
+
+
+def test_non_uniform_group_is_rejected():
+    """Each block of num_generations rows must be one repeated item.
+
+    If TRL ever stopped repeating prompts in place, mode assignment by position
+    would compare a thinking rollout on one item against a direct rollout on
+    another — a wrong gradient with no error anywhere.
+    """
+    fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
+    interleaved = [messages(index % 2) for index in range(8)]  # 0,1,0,1,... not 0,0,0,0,1,1,1,1
+
+    with pytest.raises(RuntimeError, match="differs from the first prompt of its group"):
+        fn(interleaved, FakeTrainer(group_size=8))
 
 
 def test_tokenizer_return_shapes_are_normalised():
@@ -205,7 +276,7 @@ def test_tokenizer_return_shapes_are_normalised():
     """
     for tokenizer in (FakeTokenizer(), DictReturningTokenizer(), NestedTokenizer()):
         fn = make_paired_rollout_func(tokenizer, think_fraction=0.5)
-        out = fn([messages(0)], FakeTrainer(group_size=4))
+        out = fn(repeated([0], group_size=4), FakeTrainer(group_size=4))
         for ids in out["prompt_ids"]:
             assert all(isinstance(t, int) for t in ids), f"{type(tokenizer).__name__} leaked non-ints"
 
@@ -219,27 +290,7 @@ def test_non_integer_token_ids_fail_locally():
     """
     fn = make_paired_rollout_func(StringTokenIdTokenizer(), think_fraction=0.5)
     with pytest.raises(TypeError, match="non-integer token ids"):
-        fn([messages(0)], FakeTrainer(group_size=4))
-
-
-def test_prompts_are_repeated_rather_than_trusting_num_generations():
-    """The rollout function must not rely on the backend honouring num_generations.
-
-    The first paired run did, got one completion per prompt instead of four, and
-    produced 16 completions where 64 were required. Repeating explicitly makes
-    the output length equal the input length under either interpretation.
-    """
-    trainer = FakeTrainer(group_size=8)
-    fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
-
-    out = fn([messages(0), messages(1), messages(2)], trainer)
-
-    assert len(out["completion_ids"]) == 3 * 8
-    # Two calls (one per mode), each asking for 3 prompts x 4 repeats, one apiece.
-    assert len(trainer.vllm_generation.calls) == 2
-    for sent, num_generations in trainer.vllm_generation.calls:
-        assert len(sent) == 3 * 4
-        assert num_generations == 1
+        fn(repeated([0], group_size=4), FakeTrainer(group_size=4))
 
 
 def test_logprobs_are_reduced_to_one_float_per_token():
@@ -253,15 +304,11 @@ def test_logprobs_are_reduced_to_one_float_per_token():
         RuntimeError: size of tensor a (64) must match tensor b (361) at dim 1
 
     where 64 and 361 are two *completion lengths*, naming nothing about logprobs.
-
-    Length must match each completion individually, not the batch maximum: the
-    two halves are generated in separate calls, so a per-call padded width would
-    disagree with the trainer's own padding across the merged group.
     """
     trainer = FakeTrainer(group_size=8)
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    out = fn([messages(0), messages(1)], trainer)
+    out = fn(repeated([0, 1], group_size=8), trainer)
 
     for completion, sequence in zip(out["completion_ids"], out["logprobs"]):
         assert len(sequence) == len(completion), "logprobs must align token-for-token"
@@ -273,12 +320,12 @@ def test_logprobs_are_reduced_to_one_float_per_token():
 def test_short_backend_response_is_caught():
     """A backend returning too few completions must fail loudly, not silently.
 
-    Slicing a short batch yields empty ranges, which previously turned into a
-    quietly undersized group rather than an error.
+    An undersized batch would otherwise reach the reward functions and be
+    reported there as a reward-count error, several layers from its cause.
     """
     trainer = FakeTrainer(group_size=8)
     trainer.vllm_generation = ShortVLLM()
     fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
 
-    with pytest.raises(RuntimeError, match="expected one each"):
-        fn([messages(0), messages(1)], trainer)
+    with pytest.raises(RuntimeError, match="exactly one per prompt row"):
+        fn(repeated([0, 1], group_size=8), trainer)

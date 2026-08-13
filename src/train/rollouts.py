@@ -42,16 +42,27 @@ from prompts.contract import chat_template_kwargs
 def make_paired_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str = "adaptive"):
     """Build a TRL `rollout_func` that splits each group across thinking modes.
 
-    TRL calls `rollout_func(prompts, trainer)` with the raw per-process prompt
-    slice (no duplication) and expects back a dict with `prompt_ids`,
-    `completion_ids` and `logprobs`, each holding `n_prompts * num_generations`
-    entries in prompt-major order.
+    **The contract, which cost four failed runs to establish.** TRL's
+    `RepeatSampler` is built with `mini_repeat_count=num_generations`, so every
+    prompt is already duplicated `num_generations` times, contiguously, *before*
+    the batch reaches here. `prompts` is therefore not a list of distinct items:
+    at `num_generations=8` a batch of 8 rows is one item repeated eight times.
+    `rollout_func` owes back exactly `len(prompts)` completions — one per row,
+    not one per row times the group size.
 
-    Rather than driving vLLM directly, this reuses `trainer.vllm_generation`,
-    whose `generate()` returns precisely that 4-tuple. Calling it twice — once
-    per mode — and interleaving keeps the sampling path, the weight syncing and
-    the logprob bookkeeping identical to the standard one. The only thing that
-    changes is which chat template each half was rendered with.
+    That single misreading produced three different errors in a row, because it
+    is wrong by a factor of `num_generations` and nothing checks it until the
+    reward functions are asked for one value per completion.
+
+    Generation goes through `trainer.vllm_generation.generate`, which keeps the
+    sampling path, weight syncing and logprob bookkeeping identical to the
+    standard one. It is called with `num_generations=1`: that argument is a
+    *stride* used to undo the sampler's duplication
+    (`prompts[::num_generations]`, then `n=num_generations` per unique prompt),
+    and a stride of 1 means "take every row as given, one completion each" —
+    which is what is wanted here, since each row has already been rendered in its
+    own thinking mode and rows within a group are deliberately no longer
+    identical.
 
     `enable_thinking=False` makes Qwen3's template close an empty
     `<think></think>` inside the *prompt*, so the completion begins outside the
@@ -97,9 +108,6 @@ def make_paired_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str
             )
         return out
 
-    def render(prompts, enable_thinking: bool) -> list[list[int]]:
-        return [token_ids(messages, enable_thinking) for messages in prompts]
-
     def rollout_func(prompts, trainer) -> dict:
         group_size = getattr(trainer, "num_generations", None) or trainer.args.num_generations
         n_think = max(1, round(group_size * think_fraction))
@@ -110,62 +118,50 @@ def make_paired_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str
                 f"num_generations={group_size}; the group would contain one mode only, "
                 "which is the failure this function exists to fix."
             )
-
-        def sample(enable_thinking: bool, per_prompt: int):
-            """Generate `per_prompt` completions for each prompt, in order.
-
-            Each prompt is repeated `per_prompt` times and generation is asked
-            for one completion apiece, rather than passing `per_prompt` as
-            `num_generations`. That is deliberate: the first attempt trusted
-            `num_generations` and got back one completion per prompt instead of
-            four, so the slices ran off the end of the batch and produced 16
-            completions where 64 were required. Repeating explicitly makes the
-            output length equal the input length under either interpretation,
-            and fixes the ordering to exactly the order requested.
-            """
-            rendered = render(prompts, enable_thinking)
-            repeated = [ids for ids in rendered for _ in range(per_prompt)]
-            prompt_ids, completion_ids, logprobs, _ = trainer.vllm_generation.generate(
-                repeated, None, 1
+        if len(prompts) % group_size:
+            raise ValueError(
+                f"got {len(prompts)} prompts, which is not a multiple of "
+                f"num_generations={group_size}. TRL's sampler emits each prompt exactly "
+                "num_generations times in a row, so a ragged batch means that assumption "
+                "no longer holds and mode assignment by position would be meaningless."
             )
-            if len(completion_ids) != len(repeated):
+
+        # A row's position inside its block of `group_size` decides its mode. The
+        # block is one item repeated, so this is the whole intervention: the same
+        # prompt is rendered with thinking enabled for the first `n_think` rows
+        # and disabled for the rest, which is what puts both modes in a group.
+        rendered: list[list[int]] = []
+        for index, messages in enumerate(prompts):
+            position = index % group_size
+            if messages != prompts[index - position]:
                 raise RuntimeError(
-                    f"vllm_generation.generate returned {len(completion_ids)} completions for "
-                    f"{len(repeated)} prompts; expected one each."
+                    f"prompt at position {index} differs from the first prompt of its "
+                    "group. Modes are assigned by position on the assumption that each "
+                    "block of num_generations rows is one repeated item; if that is no "
+                    "longer true the two modes would be compared across different items."
                 )
-            # vLLM returns per-token top-k logprobs, shape
-            # (batch, completion_len, num_logprobs). TRL's standard path reduces
-            # this to the sampled token's logprob before use, and rollout_func
-            # must hand back the same 2-D shape. Returning the raw 3-D form fails
-            # much later with a shape mismatch inside the importance-sampling
-            # correction ("size of tensor a (64) must match tensor b (361)"),
-            # which says nothing about logprobs.
-            logprobs = [[lp[0] for lp in sequence] for sequence in logprobs]
-            return prompt_ids, completion_ids, logprobs
+            rendered.append(token_ids(messages, enable_thinking=position < n_think))
 
-        thought = sample(True, n_think)
-        direct = sample(False, n_direct)
-
-        # Both batches are prompt-major by construction. Interleave so each
-        # prompt's full group is contiguous, because TRL identifies a group by
-        # consecutive positions.
-        prompt_ids: list = []
-        completion_ids: list = []
-        logprobs: list = []
-        for index in range(len(prompts)):
-            t0, t1 = index * n_think, (index + 1) * n_think
-            d0, d1 = index * n_direct, (index + 1) * n_direct
-            prompt_ids.extend(list(thought[0][t0:t1]) + list(direct[0][d0:d1]))
-            completion_ids.extend(list(thought[1][t0:t1]) + list(direct[1][d0:d1]))
-            logprobs.extend(list(thought[2][t0:t1]) + list(direct[2][d0:d1]))
-
-        expected = len(prompts) * group_size
-        if len(completion_ids) != expected:
+        # num_generations=1 means stride 1: no de-duplication, one completion per
+        # row. Anything larger would discard rows -- including, here, every direct
+        # row -- since generate() slices `prompts[::num_generations]`.
+        prompt_ids, completion_ids, logprobs, _ = trainer.vllm_generation.generate(
+            rendered, None, 1
+        )
+        if len(completion_ids) != len(prompts):
             raise RuntimeError(
-                f"paired rollouts produced {len(completion_ids)} completions, expected "
-                f"{expected}. TRL groups by position, so a miscount silently mixes "
-                "rollouts from different prompts into one advantage computation."
+                f"vllm_generation.generate returned {len(completion_ids)} completions for "
+                f"{len(prompts)} prompts; TRL requires exactly one per prompt row."
             )
+
+        # vLLM returns per-token top-k logprobs, shape
+        # (batch, completion_len, num_logprobs). TRL's standard path reduces this
+        # to the sampled token's logprob before use, and rollout_func must hand
+        # back the same 2-D shape. Returning the raw 3-D form survives padding and
+        # stacking and fails only in the importance-sampling correction, as
+        # "size of tensor a (64) must match tensor b (361)" -- two completion
+        # lengths, naming nothing about logprobs.
+        logprobs = [[lp[0] for lp in sequence] for sequence in logprobs]
 
         return {
             "prompt_ids": prompt_ids,

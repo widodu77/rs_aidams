@@ -65,9 +65,7 @@ POLICY_INSTRUCTIONS = {
         "nothing but the tool call block(s):\n"
         '<tool_call>{"name": "...", "arguments": {...}}</tool_call>'
     ),
-    # Used at Phase D, where the decision is the model's to make rather than the
-    # prompt's. Kept here so the contract has a single home. Note it shows both
-    # shapes, so neither is privileged by the prompt.
+    # this one is for phase D 
     "adaptive": (
         "- You may optionally reason inside a single <think>...</think> block "
         "before the tool call(s), if and only if the request warrants it. Either "
