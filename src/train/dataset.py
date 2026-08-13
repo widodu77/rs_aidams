@@ -42,17 +42,38 @@ DEFAULT_CATEGORIES = ("simple_python", "multiple", "parallel", "parallel_multipl
 TRAIN_POLICY = "adaptive"
 
 
-def build_records(tokenizer, categories=DEFAULT_CATEGORIES, policy: str = TRAIN_POLICY) -> list[dict]:
-    """Render every item into a training record."""
+def build_records(
+    tokenizer,
+    categories=DEFAULT_CATEGORIES,
+    policy: str = TRAIN_POLICY,
+    conversational: bool = False,
+) -> list[dict]:
+    """Render every item into a training record.
+
+    `conversational=True` keeps the prompt as a list of messages instead of a
+    pre-rendered string. That is required by the paired-rollout path: it has to
+    render each prompt *twice*, once with `enable_thinking=True` and once with
+    `False`, which is impossible once the template has already been applied.
+    TRL's own guidance is the same — chat templating belongs inside
+    `rollout_func`, at the backend boundary.
+
+    The default stays False so the standard path keeps exactly one
+    prompt-construction route, byte-identical to the one the baselines used.
+    """
     template_kwargs = chat_template_kwargs(policy)
     records = []
     for category in categories:
         for sample in load_category(category):
-            prompt = tokenizer.apply_chat_template(
-                build_messages(sample, policy),
-                tokenize=False,
-                add_generation_prompt=True,
-                **template_kwargs,
+            messages = build_messages(sample, policy)
+            prompt = (
+                messages
+                if conversational
+                else tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    **template_kwargs,
+                )
             )
             records.append(
                 {
@@ -143,11 +164,12 @@ def build_datasets(
     eval_fraction: float = 0.2,
     seed: int = 0,
     manifest_path: str | None = "results/split_manifest.json",
+    conversational: bool = False,
 ):
     """Build HF Datasets for training. Returns `(train_ds, eval_ds)`."""
     from datasets import Dataset
 
-    records = build_records(tokenizer, categories)
+    records = build_records(tokenizer, categories, conversational=conversational)
     train, evaluation = split_records(records, eval_fraction, seed)
 
     if manifest_path:

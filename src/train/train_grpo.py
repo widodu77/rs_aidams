@@ -61,6 +61,24 @@ def parse_args() -> argparse.Namespace:
         "batch instead, keeping relative magnitude between groups at a sane scale. See "
         "notes/2026-08-13.md.",
     )
+    p.add_argument(
+        "--paired-rollouts",
+        action="store_true",
+        help="force every GRPO group to contain BOTH a reasoned and a direct continuation "
+        "of the same prompt, instead of hoping free sampling produces both. This is the "
+        "proposal's original design and the fix for the first sweep's null result: the "
+        "base model reasons on ~97%% of samples, so no-think rollouts never entered a "
+        "group and the reward could not price a choice the model never made. It also "
+        "un-cancels lambda — with both modes present, lambda changes which rollout ranks "
+        "highest rather than only rescaling the spread, and group normalisation cannot "
+        "divide out a change of ordering. See src/train/rollouts.py.",
+    )
+    p.add_argument(
+        "--think-fraction",
+        type=float,
+        default=0.5,
+        help="share of each group generated with thinking enabled, under --paired-rollouts.",
+    )
     p.add_argument("--eval-fraction", type=float, default=0.2)
     p.add_argument("--split-seed", type=int, default=0)
     # 100 steps at the measured ~85 s/step is ~2.4 h per run, so a five-point
@@ -250,11 +268,15 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Paired rollouts must re-render each prompt twice (once per thinking mode),
+    # which is impossible from a pre-rendered string — so that path keeps the
+    # prompt conversational and templates it inside the rollout function.
     train_ds, eval_ds = build_datasets(
         tokenizer,
         eval_fraction=args.eval_fraction,
         seed=args.split_seed,
         manifest_path=os.path.join(args.output, "split_manifest.json"),
+        conversational=args.paired_rollouts,
     )
     completions_per_step = args.per_device_batch_size * args.gradient_accumulation_steps
     print(f"train {len(train_ds)}  eval {len(eval_ds)}")
@@ -351,6 +373,25 @@ def main() -> None:
         report_to=[],
     )
 
+    rollout_func = None
+    if args.paired_rollouts:
+        if not args.use_vllm:
+            raise ValueError(
+                "--paired-rollouts requires --use-vllm: it reuses trainer.vllm_generation "
+                "so that sampling, weight syncing and logprob bookkeeping stay identical "
+                "to the standard path."
+            )
+        from train.rollouts import make_paired_rollout_func
+
+        rollout_func = make_paired_rollout_func(tokenizer, args.think_fraction)
+        n_think = max(1, round(args.num_generations * args.think_fraction))
+        print(
+            f"paired rollouts: {n_think} thinking + {args.num_generations - n_think} direct "
+            f"per group of {args.num_generations}"
+        )
+        # TRL's rollout_func is experimental and warns loudly on every call.
+        os.environ.setdefault("TRL_EXPERIMENTAL_SILENCE", "1")
+
     trainer = GRPOTrainer(
         model=args.model,
         reward_funcs=reward_funcs,
@@ -359,6 +400,7 @@ def main() -> None:
         eval_dataset=eval_ds,
         processing_class=tokenizer,
         peft_config=peft_config,
+        rollout_func=rollout_func,
     )
 
     # Headroom check before the first step. On a 15 GiB card this run has three
