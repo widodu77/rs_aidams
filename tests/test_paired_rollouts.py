@@ -57,21 +57,36 @@ class StringTokenIdTokenizer:
 
 
 class FakeVLLM:
-    """Returns prompt-major batches, tagging every completion with its origin."""
+    """Returns exactly one completion per input prompt.
+
+    This matches what TRL's real `vllm_generation.generate` was observed to do:
+    asking for `num_generations=4` still produced one completion per prompt. The
+    rollout function therefore repeats prompts itself and asks for one apiece, so
+    this fake deliberately **ignores** `num_generations` — a fake that honoured it
+    would hide the very bug that broke the first paired run (16 completions
+    produced where 64 were required).
+    """
 
     def __init__(self):
         self.calls = []
 
     def generate(self, prompt_ids, images, num_generations, profiler=None):
-        self.calls.append((prompt_ids, num_generations))
+        self.calls.append((list(prompt_ids), num_generations))
         prompts, completions, logprobs = [], [], []
-        for ids in prompt_ids:
+        for position, ids in enumerate(prompt_ids):
             mode, name = ids[0], ids[1]
-            for k in range(num_generations):
-                prompts.append(ids)
-                completions.append([mode, name, k])
-                logprobs.append([[0.0]])
+            prompts.append(ids)
+            completions.append([mode, name, position])
+            logprobs.append([[0.0]])
         return prompts, completions, logprobs, None
+
+
+class ShortVLLM(FakeVLLM):
+    """Returns fewer completions than prompts, to prove the count check fires."""
+
+    def generate(self, prompt_ids, images, num_generations, profiler=None):
+        out = super().generate(prompt_ids, images, num_generations, profiler)
+        return tuple(field[:-1] if field else field for field in out[:3]) + (None,)
 
 
 class FakeTrainer:
@@ -197,3 +212,37 @@ def test_non_integer_token_ids_fail_locally():
     fn = make_paired_rollout_func(StringTokenIdTokenizer(), think_fraction=0.5)
     with pytest.raises(TypeError, match="non-integer token ids"):
         fn([messages(0)], FakeTrainer(group_size=4))
+
+
+def test_prompts_are_repeated_rather_than_trusting_num_generations():
+    """The rollout function must not rely on the backend honouring num_generations.
+
+    The first paired run did, got one completion per prompt instead of four, and
+    produced 16 completions where 64 were required. Repeating explicitly makes
+    the output length equal the input length under either interpretation.
+    """
+    trainer = FakeTrainer(group_size=8)
+    fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
+
+    out = fn([messages(0), messages(1), messages(2)], trainer)
+
+    assert len(out["completion_ids"]) == 3 * 8
+    # Two calls (one per mode), each asking for 3 prompts x 4 repeats, one apiece.
+    assert len(trainer.vllm_generation.calls) == 2
+    for sent, num_generations in trainer.vllm_generation.calls:
+        assert len(sent) == 3 * 4
+        assert num_generations == 1
+
+
+def test_short_backend_response_is_caught():
+    """A backend returning too few completions must fail loudly, not silently.
+
+    Slicing a short batch yields empty ranges, which previously turned into a
+    quietly undersized group rather than an error.
+    """
+    trainer = FakeTrainer(group_size=8)
+    trainer.vllm_generation = ShortVLLM()
+    fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
+
+    with pytest.raises(RuntimeError, match="expected one each"):
+        fn([messages(0), messages(1)], trainer)

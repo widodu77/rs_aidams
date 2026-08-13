@@ -843,3 +843,37 @@ This is the second time in two entries that a type change several layers away ca
 (entry 23: conversational prompts changed the *completion* type). Both were invisible at the call
 site, and both crossed a library boundary where the type is decided by a branch in someone else's
 code.
+
+---
+
+## 25 — `num_generations` was not honoured, and the guard earned its keep
+
+**Phase D · 2026-08-13**
+
+**Symptom.** Third paired attempt, and this time the error was ours and said so:
+
+```
+RuntimeError: paired rollouts produced 16 completions, expected 64.
+```
+
+**Root cause.** `trainer.vllm_generation.generate(prompts, None, n)` returned **one** completion per
+prompt regardless of `n`, despite its docstring describing `num_generations` as "number of
+generations per prompt". With 8 prompts and `n_think=4`, the per-prompt slices `[0:4]`, `[4:8]`,
+`[8:12]` … ran off the end of an 8-element batch: the first two groups got their four, the rest got
+nothing. 8 prompts x (1 thinking + 1 direct) = 16.
+
+**Fix.** Stop relying on that parameter. Each prompt is now repeated `per_prompt` times in the input
+list and generation is asked for one completion apiece, so the output length equals the input length
+under either interpretation and the ordering is exactly the order requested. A length check on each
+call catches a short response immediately.
+
+**Lesson.** The arithmetic in the error message is what made this a five-minute diagnosis: 16 and 64
+factor as 8 x 2 and 8 x 8, which says "two completions per prompt instead of eight" and points
+straight at the generation call. **An assertion that reports the numbers it compared is worth far
+more than one that reports only that they differed** — and this is the same guard that, without it,
+would have let a silently undersized batch through into the advantage computation.
+
+Also worth noting what the test fake had to become: it now deliberately **ignores**
+`num_generations` and returns one completion per prompt, because that is what the real backend does.
+A fake that honoured the documented behaviour would hide this bug exactly as the previous fake's
+string token ids hid entry 24.

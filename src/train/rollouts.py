@@ -111,21 +111,43 @@ def make_paired_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str
                 "which is the failure this function exists to fix."
             )
 
-        thought = trainer.vllm_generation.generate(render(prompts, True), None, n_think)
-        direct = trainer.vllm_generation.generate(render(prompts, False), None, n_direct)
+        def sample(enable_thinking: bool, per_prompt: int):
+            """Generate `per_prompt` completions for each prompt, in order.
 
-        # Both calls return prompt-major batches: prompt 0's completions, then
-        # prompt 1's, and so on. Re-interleave so each prompt's full group is
-        # contiguous, because TRL identifies a group by consecutive positions.
+            Each prompt is repeated `per_prompt` times and generation is asked
+            for one completion apiece, rather than passing `per_prompt` as
+            `num_generations`. That is deliberate: the first attempt trusted
+            `num_generations` and got back one completion per prompt instead of
+            four, so the slices ran off the end of the batch and produced 16
+            completions where 64 were required. Repeating explicitly makes the
+            output length equal the input length under either interpretation,
+            and fixes the ordering to exactly the order requested.
+            """
+            rendered = render(prompts, enable_thinking)
+            repeated = [ids for ids in rendered for _ in range(per_prompt)]
+            out = trainer.vllm_generation.generate(repeated, None, 1)
+            if len(out[1]) != len(repeated):
+                raise RuntimeError(
+                    f"vllm_generation.generate returned {len(out[1])} completions for "
+                    f"{len(repeated)} prompts; expected one each."
+                )
+            return out
+
+        thought = sample(True, n_think)
+        direct = sample(False, n_direct)
+
+        # Both batches are prompt-major by construction. Interleave so each
+        # prompt's full group is contiguous, because TRL identifies a group by
+        # consecutive positions.
         prompt_ids: list = []
         completion_ids: list = []
         logprobs: list = []
         for index in range(len(prompts)):
             t0, t1 = index * n_think, (index + 1) * n_think
             d0, d1 = index * n_direct, (index + 1) * n_direct
-            prompt_ids.extend(thought[0][t0:t1] + direct[0][d0:d1])
-            completion_ids.extend(thought[1][t0:t1] + direct[1][d0:d1])
-            logprobs.extend(thought[2][t0:t1] + direct[2][d0:d1])
+            prompt_ids.extend(list(thought[0][t0:t1]) + list(direct[0][d0:d1]))
+            completion_ids.extend(list(thought[1][t0:t1]) + list(direct[1][d0:d1]))
+            logprobs.extend(list(thought[2][t0:t1]) + list(direct[2][d0:d1]))
 
         expected = len(prompts) * group_size
         if len(completion_ids) != expected:
