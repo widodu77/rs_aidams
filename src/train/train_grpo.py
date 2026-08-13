@@ -47,6 +47,20 @@ def parse_args() -> argparse.Namespace:
         "four of five categories switch off below 0.55, then nothing changes until "
         "irrelevance at 2.11.",
     )
+    p.add_argument(
+        "--scale-rewards",
+        choices=["group", "batch", "none"],
+        default="group",
+        help="how GRPO normalises advantages. TRL's default 'group' divides by the "
+        "within-group reward std — which CANCELS lambda exactly whenever length is "
+        "the only source of variance in a group (all rollouts correct). Verified "
+        "against logged reward_std to 4 significant figures: the advantage is "
+        "identical at lambda=0.05 and lambda=2.0, which is why the first sweep was "
+        "flat. 'none' preserves lambda's magnitude but leaves all-correct groups with "
+        "~0.01-scale advantages, so it may train slowly; 'batch' normalises across the "
+        "batch instead, keeping relative magnitude between groups at a sane scale. See "
+        "notes/2026-08-13.md.",
+    )
     p.add_argument("--eval-fraction", type=float, default=0.2)
     p.add_argument("--split-seed", type=int, default=0)
     # 100 steps at the measured ~85 s/step is ~2.4 h per run, so a five-point
@@ -325,6 +339,7 @@ def main() -> None:
         # Opt-in: needs vLLM's cumem allocator, which needs libnvrtc.so.13.
         vllm_enable_sleep_mode=args.use_vllm and args.vllm_sleep,
         reward_weights=reward_weights,
+        scale_rewards=args.scale_rewards,
         logging_steps=args.log_steps,
         save_steps=args.save_steps,
         seed=args.seed,
