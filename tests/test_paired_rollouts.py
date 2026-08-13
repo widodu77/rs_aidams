@@ -65,6 +65,12 @@ class FakeVLLM:
     this fake deliberately **ignores** `num_generations` — a fake that honoured it
     would hide the very bug that broke the first paired run (16 completions
     produced where 64 were required).
+
+    Completion lengths differ by mode, as they do in reality: reasoned rollouts
+    run hundreds of tokens, direct ones a few dozen. Logprobs are returned in
+    vLLM's real 3-D shape `(batch, completion_len, num_logprobs)` with two
+    candidates per position, so a caller that forgets to reduce to the top-1 is
+    caught here rather than 2500 lines into the trainer.
     """
 
     def __init__(self):
@@ -76,8 +82,10 @@ class FakeVLLM:
         for position, ids in enumerate(prompt_ids):
             mode, name = ids[0], ids[1]
             prompts.append(ids)
-            completions.append([mode, name, position])
-            logprobs.append([[0.0]])
+            # Reasoned completions are longer, exactly as they are in a real run.
+            completion = [mode, name, position] + [9] * (5 if mode else 1)
+            completions.append(completion)
+            logprobs.append([[-0.5, -9.0] for _ in completion])
         return prompts, completions, logprobs, None
 
 
@@ -232,6 +240,34 @@ def test_prompts_are_repeated_rather_than_trusting_num_generations():
     for sent, num_generations in trainer.vllm_generation.calls:
         assert len(sent) == 3 * 4
         assert num_generations == 1
+
+
+def test_logprobs_are_reduced_to_one_float_per_token():
+    """vLLM hands back top-k logprobs per position; TRL expects only the sampled one.
+
+    TRL's standard path does `[[lp[0] for lp in seq] for seq in logprobs]` right
+    after generating, so `rollout_func` owes it the same 2-D shape. Returning the
+    raw 3-D form does not fail at the boundary — it survives all the way to the
+    importance-sampling correction and dies there as
+
+        RuntimeError: size of tensor a (64) must match tensor b (361) at dim 1
+
+    where 64 and 361 are two *completion lengths*, naming nothing about logprobs.
+
+    Length must match each completion individually, not the batch maximum: the
+    two halves are generated in separate calls, so a per-call padded width would
+    disagree with the trainer's own padding across the merged group.
+    """
+    trainer = FakeTrainer(group_size=8)
+    fn = make_paired_rollout_func(FakeTokenizer(), think_fraction=0.5)
+
+    out = fn([messages(0), messages(1)], trainer)
+
+    for completion, sequence in zip(out["completion_ids"], out["logprobs"]):
+        assert len(sequence) == len(completion), "logprobs must align token-for-token"
+        for value in sequence:
+            assert isinstance(value, float), f"expected a float per token, got {value!r}"
+            assert value == -0.5, "reduction must keep the sampled token, i.e. index 0"
 
 
 def test_short_backend_response_is_caught():

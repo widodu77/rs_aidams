@@ -877,3 +877,55 @@ Also worth noting what the test fake had to become: it now deliberately **ignore
 `num_generations` and returns one completion per prompt, because that is what the real backend does.
 A fake that honoured the documented behaviour would hide this bug exactly as the previous fake's
 string token ids hid entry 24.
+
+---
+
+## 26 — Returning vLLM's logprobs unreduced, and an error 2500 lines from its cause
+
+**Phase D · 2026-08-13**
+
+**Symptom.** Fourth paired attempt. Generation now succeeded (37s, correct counts — entry 25 held),
+then died inside the trainer:
+
+```
+File ".../trl/trainer/grpo_trainer.py", line 2651, in _generate_and_score_completions
+    per_token_logps_diff = (old_per_token_logps - sampling_per_token_logps) * mask
+RuntimeError: The size of tensor a (64) must match the size of tensor b (361) at non-singleton dimension 1
+```
+
+followed, as usual, by `FileNotFoundError: runs/paired_lam0_05/log_history.json`.
+
+**Root cause.** `vllm_generation.generate` returns logprobs shaped
+`(batch, completion_len, num_logprobs)` — top-k candidates at every position. TRL's standard path
+reduces that to the sampled token's logprob on the very next line:
+
+```python
+logprobs = [[lp[0] for lp in seq] for seq in logprobs]
+```
+
+`rollout_func` bypasses `_generate_single_turn` entirely, so it inherits the obligation to return the
+same 2-D shape. I returned the raw 3-D form. It then passed through padding, stacking and masking
+without complaint and surfaced only where the shapes were finally subtracted.
+
+**Fix.** Apply the identical reduction in `sample()`, and unpack `generate`'s 4-tuple by name rather
+than indexing `out[0]`/`out[1]`/`out[2]` — the discarded fourth element is `logprob_token_ids`,
+which is precisely what would let you select the sampled candidate properly if `logprobs > 0` were
+ever set.
+
+**Lesson — the diagnostic one.** 64 and 361 are neither batch sizes nor vocabulary sizes; they are
+two *completion lengths*. That is the tell. When an error names two numbers that both look like data
+dimensions rather than configured ones, the bug is a shape convention, not a count. Entry 25's
+numbers (16 vs 64) factored cleanly into configured quantities and pointed at the generation call;
+these did not, and pointed somewhere else entirely.
+
+**Lesson — the structural one, and the real theme of entries 23–26.** All four are the same failure:
+**taking over a code path from a library means inheriting every undocumented normalisation it
+performed.** `_generate_single_turn` does three things after calling vLLM — reduces logprobs,
+handles weight syncing, resolves `num_generations` — and `rollout_func` is documented only in terms
+of the dict it must return. The fix each time was to read the standard path and copy what it does,
+which is what I should have done once, at the start, instead of four times reactively. **When
+overriding a hook, read the default implementation first; its body is the actual contract.**
+
+**Note on the recurring `FileNotFoundError`.** It has now appeared in four consecutive failures and
+has never once been the bug. `log_history.json` is written after `trainer.train()` returns, so its
+absence is a *tautology* of failure, not a cause. Same as entry 23. Scroll up.

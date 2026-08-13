@@ -125,13 +125,23 @@ def make_paired_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str
             """
             rendered = render(prompts, enable_thinking)
             repeated = [ids for ids in rendered for _ in range(per_prompt)]
-            out = trainer.vllm_generation.generate(repeated, None, 1)
-            if len(out[1]) != len(repeated):
+            prompt_ids, completion_ids, logprobs, _ = trainer.vllm_generation.generate(
+                repeated, None, 1
+            )
+            if len(completion_ids) != len(repeated):
                 raise RuntimeError(
-                    f"vllm_generation.generate returned {len(out[1])} completions for "
+                    f"vllm_generation.generate returned {len(completion_ids)} completions for "
                     f"{len(repeated)} prompts; expected one each."
                 )
-            return out
+            # vLLM returns per-token top-k logprobs, shape
+            # (batch, completion_len, num_logprobs). TRL's standard path reduces
+            # this to the sampled token's logprob before use, and rollout_func
+            # must hand back the same 2-D shape. Returning the raw 3-D form fails
+            # much later with a shape mismatch inside the importance-sampling
+            # correction ("size of tensor a (64) must match tensor b (361)"),
+            # which says nothing about logprobs.
+            logprobs = [[lp[0] for lp in sequence] for sequence in logprobs]
+            return prompt_ids, completion_ids, logprobs
 
         thought = sample(True, n_think)
         direct = sample(False, n_direct)
