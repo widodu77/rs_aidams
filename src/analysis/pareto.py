@@ -29,16 +29,26 @@ from train.dataset import load_manifest
 
 CATEGORIES = ("simple_python", "multiple", "parallel", "parallel_multiple", "irrelevance")
 
-# label -> path. Order is the reading order of the table.
+# label -> path. Order is the reading order of the table: the fixed-policy
+# anchors, then the paired-rollout sweep (the current result), then the original
+# free-sampling sweep. Both sweeps are kept because the comparison between them
+# is itself a finding — they were trained on identical data with identical seeds
+# and differ only in whether each GRPO group was forced to contain both thinking
+# modes. Missing files are skipped with a note, so a partial set still prints.
 DEFAULT_RUNS = [
     ("never", "results/raw/vllm/qwen3-1.7b_never.jsonl"),
     ("always", "results/raw/vllm/qwen3-1.7b_always.jsonl"),
     ("adaptive prompt", "results/raw/vllm/qwen3-1.7b_adaptive.jsonl"),
-    ("trained λ=0.05", "results/raw/vllm_eval/trained_lam0_05.jsonl"),
-    ("trained λ=0.25", "results/raw/vllm_eval/trained_lam0_25.jsonl"),
-    ("trained λ=0.5", "results/raw/vllm_eval/trained_lam0_5.jsonl"),
-    ("trained λ=1.0", "results/raw/vllm_eval/trained_lam1_0.jsonl"),
-    ("trained λ=2.0", "results/raw/vllm_eval/trained_lam2_0.jsonl"),
+    ("paired λ=0.05", "results/raw/vllm_eval/trained_paired_lam0_05.jsonl"),
+    ("paired λ=0.25", "results/raw/vllm_eval/trained_paired_lam0_25.jsonl"),
+    ("paired λ=0.5", "results/raw/vllm_eval/trained_paired_lam0_5.jsonl"),
+    ("paired λ=1.0", "results/raw/vllm_eval/trained_paired_lam1_0.jsonl"),
+    ("paired λ=2.0", "results/raw/vllm_eval/trained_paired_lam2_0.jsonl"),
+    ("unpaired λ=0.05", "results/raw/vllm_eval/trained_lam0_05.jsonl"),
+    ("unpaired λ=0.25", "results/raw/vllm_eval/trained_lam0_25.jsonl"),
+    ("unpaired λ=0.5", "results/raw/vllm_eval/trained_lam0_5.jsonl"),
+    ("unpaired λ=1.0", "results/raw/vllm_eval/trained_lam1_0.jsonl"),
+    ("unpaired λ=2.0", "results/raw/vllm_eval/trained_lam2_0.jsonl"),
 ]
 
 
@@ -48,6 +58,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--split", choices=["train", "eval"], default="eval")
     p.add_argument("--tokenizer", default="Qwen/Qwen3-1.7B")
     p.add_argument("--out", default="results/pareto.json")
+    p.add_argument(
+        "--run",
+        action="append",
+        metavar="LABEL=PATH",
+        help="replace the default run list (repeatable), e.g. --run 'paired λ=0.5=path.jsonl'",
+    )
     return p.parse_args()
 
 
@@ -97,8 +113,14 @@ def main() -> None:
         (c, s["id"]): s for c in CATEGORIES for s in load_category(c)
     }
 
+    # `--run` uses the last '=' as the separator, because the labels themselves
+    # contain one (`paired λ=0.5`).
+    selected = DEFAULT_RUNS
+    if args.run:
+        selected = [(spec.rsplit("=", 1)[0], spec.rsplit("=", 1)[1]) for spec in args.run]
+
     runs = {}
-    for label, path in DEFAULT_RUNS:
+    for label, path in selected:
         if not os.path.exists(path):
             print(f"missing, skipped: {path}")
             continue
@@ -157,7 +179,10 @@ def main() -> None:
     # should switch off in order — simple_python first, then multiple, then the
     # parallel categories, with irrelevance last.
     print("\n\nthink rate by category (the switch-off prediction)\n")
-    labels = [l for l in runs if l.startswith("trained") or l == "adaptive prompt"]
+    # Every run that used the adaptive prompt, i.e. everything whose think rate
+    # the model chose rather than had imposed. `never` and `always` are fixed at
+    # 0% and ~100% by construction and would only pad the table.
+    labels = [l for l in runs if l not in ("never", "always")]
     head = f"{'policy':18s}" + "".join(f"{c[:12]:>14s}" for c in CATEGORIES)
     print(head)
     print("-" * len(head))
