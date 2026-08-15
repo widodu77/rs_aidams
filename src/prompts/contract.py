@@ -65,13 +65,33 @@ POLICY_INSTRUCTIONS = {
         "nothing but the tool call block(s):\n"
         '<tool_call>{"name": "...", "arguments": {...}}</tool_call>'
     ),
-    # this one is for phase D 
+    # this one is for phase D
     "adaptive": (
         "- You may optionally reason inside a single <think>...</think> block "
         "before the tool call(s), if and only if the request warrants it. Either "
         "of these shapes is valid:\n"
         '<think>your reasoning here</think><tool_call>{"name": "...", "arguments": {...}}</tool_call>\n'
         '<tool_call>{"name": "...", "arguments": {...}}</tool_call>'
+    ),
+    # Phase F. Same contract as `adaptive`, three deliberate differences:
+    # the choice is framed as a decision to be made rather than a permission
+    # granted, the direct shape is listed FIRST (the adaptive prompt shows the
+    # reasoning shape first, and order is a known prior for small models), and
+    # an explicit base rate is stated. Nothing else changes.
+    #
+    # This exists to answer one question before any rollout machinery is built:
+    # is the 96.8% think rate under `adaptive` a property of the model, or of
+    # how that particular prompt was worded? If a wording change moves the split
+    # materially, paired rollouts become legitimate for free — both branches are
+    # sampled from the same prompt, so neither is off-policy at deployment,
+    # which is exactly the flaw that made the Phase E pairing backfire.
+    "gate": (
+        "- First decide whether this request actually needs reasoning. Most do not. "
+        "If the correct call is unambiguous, emit it directly with no reasoning. "
+        "Only if the request is genuinely ambiguous, reason first inside a single "
+        "<think>...</think> block. Either of these shapes is valid:\n"
+        '<tool_call>{"name": "...", "arguments": {...}}</tool_call>\n'
+        '<think>your reasoning here</think><tool_call>{"name": "...", "arguments": {...}}</tool_call>'
     ),
 }
 
@@ -93,6 +113,12 @@ CHAT_TEMPLATE_KWARGS = {
     # Phase D: the model must be free to choose, so thinking is available but
     # not forced. The reward, not the template, decides whether it is used.
     "adaptive": {"enable_thinking": True},
+    # Phase F: same as adaptive. The template must stay identical between the
+    # two branches, because a template difference is what put the Phase E
+    # direct rollouts off-policy — `enable_thinking=False` prefills an empty
+    # <think></think> into the *prompt*, so the completion never contains the
+    # decision and reinforcing it trains a prompt that is never deployed.
+    "gate": {"enable_thinking": True},
 }
 
 
