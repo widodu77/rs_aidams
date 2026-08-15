@@ -134,16 +134,59 @@ but at a magnitude too small to shift the policy, and it still cancels on the ot
 Full result in [`notes/2026-08-15.md`](notes/2026-08-15.md), derivation and verification in
 [`notes/2026-08-13.md`](notes/2026-08-13.md).
 
+### Then moving the decision into the completion changed everything
+
+The diagnosis named a fix, so we ran it. `--gate-rollouts` keeps **one** prompt for the whole group
+and forces the direct half by prepending Qwen3's empty-think marker to its **completion** instead of
+its prompt. The decision is then something the policy is trained to produce, and at evaluation the
+model can emit it itself.
+
+Same λ, same pairing, same everything else. Only the location of the decision differs:
+
+| policy | acc | tokens | think rate |
+|---|---|---|---|
+| never (prompted) | 71.4% | 51.4 | 0% |
+| always | 89.5% | 264.1 | 98.4% |
+| decision in **prompt** λ=2.0 | 89.5% | 266.8 | 98.4% |
+| decision in **completion** λ=2.0 | **89.9%** | **59.7** | **0%** |
+| oracle (bound) | 92.7% | 99.5 | — |
+
+Paired tests on the same 248 items:
+
+- versus **always-think**: `p = 1.000` on accuracy (13 wins, 12 losses) at **−204.5 tokens/item**
+  [−220.1, −190.0]. A 77% cost reduction with no detectable accuracy loss.
+- versus **never-think**: **46 wins, 0 losses, `p < 0.001`**, for 8.3 extra tokens. The only
+  significant accuracy result in the project, with no regressions at all.
+
+Every completion is a genuine call: correct multi-call output on `parallel`, correct prose
+abstention on `irrelevance`. Per-category over `never`: parallel 72.5 → 92.5, parallel_multiple
+50.0 → 72.5, irrelevance 37.5 → 93.8.
+
+**Three caveats, all load-bearing.** This is *not* a gate: think rate is 0%, not the oracle's 17.4%.
+The model did not learn *when* to reason, it learned not to need it. The comparison to `never` is
+confounded, since `never` is prompted and this is trained; the honest control is the other twelve
+trained runs, which used the same reward and budget and saved **no tokens at all** (224–281 versus
+59.7). And it collapsed: once every rollout stopped reasoning the groups went degenerate and the
+policy froze around step 23, so λ=2.0 finds an edge rather than a curve.
+
 ### What the study establishes
 
 The prize is real and large (the oracle is both more accurate and 2.7× cheaper than always-think).
-Prompting cannot collect it. Length-penalised GRPO cannot collect it either, for a structural reason
-rather than a tuning one. The claim is about *this objective under this optimiser*, on 100 steps of
-a 1.7B model with LoRA and one seed per configuration, not about the problem being unsolvable.
+Prompting cannot collect it, across three separate wordings. Length-penalised GRPO cannot collect it
+either **while the decision sits in the prompt**, for a structural reason rather than a tuning one.
+Move the decision into the completion and the same objective, at the same λ, produces always-think
+accuracy at never-think cost.
 
-The diagnosis points at two specific next steps: make the gate an explicit token in the *completion*
-so both branches stay on-policy, or take the length term out of the normaliser so its magnitude
-survives standardisation. Neither was attempted here.
+So the headline is not a null. It is that **where the decision lives decides whether the objective
+can act on it at all** — and one line of rollout code separates "nothing happens across twelve runs"
+from "77% of the tokens disappear at no measurable cost".
+
+Limits: 100 optimiser steps, Qwen3-1.7B, LoRA r=32, one task family, one seed per configuration, and
+the winning run collapsed to 0% think rate rather than finding a gate.
+
+The obvious next experiment, now that λ demonstrably controls something: sweep λ ∈ {0.05 … 2.0} with
+gate rollouts. λ=2.0 gives 0%, the untrained model gives 97%, and a gate, if one exists, is in
+between. About 90 minutes.
 
 ## Status
 

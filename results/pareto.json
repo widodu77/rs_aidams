@@ -105,6 +105,27 @@
       "think_tokens": 193.1209677419355,
       "think_rate": 0.9838709677419355
     },
+    "decision=prompt \u03bb=2.0": {
+      "n": 248,
+      "accuracy": 0.8951612903225806,
+      "tokens": 266.8306451612903,
+      "think_tokens": 192.3790322580645,
+      "think_rate": 0.9838709677419355
+    },
+    "decision=completion \u03bb=2.0": {
+      "n": 248,
+      "accuracy": 0.8991935483870968,
+      "tokens": 59.65725806451613,
+      "think_tokens": 0.0,
+      "think_rate": 0.0
+    },
+    "gate prompt (base)": {
+      "n": 248,
+      "accuracy": 0.8991935483870968,
+      "tokens": 284.3225806451613,
+      "think_tokens": 202.30645161290323,
+      "think_rate": 0.9717741935483871
+    },
     "oracle": {
       "n": 248,
       "accuracy": 0.9274193548387096,
@@ -204,6 +225,27 @@
       "parallel": 0.975,
       "parallel_multiple": 0.975,
       "irrelevance": 0.9791666666666666
+    },
+    "decision=prompt \u03bb=2.0": {
+      "simple_python": 0.9875,
+      "multiple": 1.0,
+      "parallel": 0.975,
+      "parallel_multiple": 0.975,
+      "irrelevance": 0.9791666666666666
+    },
+    "decision=completion \u03bb=2.0": {
+      "simple_python": 0.0,
+      "multiple": 0.0,
+      "parallel": 0.0,
+      "parallel_multiple": 0.0,
+      "irrelevance": 0.0
+    },
+    "gate prompt (base)": {
+      "simple_python": 1.0,
+      "multiple": 0.95,
+      "parallel": 0.95,
+      "parallel_multiple": 0.975,
+      "irrelevance": 0.9583333333333334
     }
   }
 }

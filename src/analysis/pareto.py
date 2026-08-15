@@ -54,6 +54,13 @@ DEFAULT_RUNS = [
     # optimiser's normalisation or of the model.
     ("norm=group λ=2.0", "results/raw/vllm_eval/trained_accum4_group_lam2_0.jsonl"),
     ("norm=batch λ=2.0", "results/raw/vllm_eval/trained_accum4_batch_lam2_0.jsonl"),
+    # Where the decision lives, at fixed lambda and fixed pairing. The IS
+    # correction is off in both, so the only difference is prompt versus
+    # completion. `gate` is the corrected design; `isoff` is its control.
+    ("decision=prompt λ=2.0", "results/raw/vllm_eval/trained_paired_isoff_lam2_0.jsonl"),
+    ("decision=completion λ=2.0", "results/raw/vllm_eval/trained_gate_lam2_0.jsonl"),
+    # The untrained model under the same prompt wording the gate runs used.
+    ("gate prompt (base)", "results/raw/vllm_eval/base_gate.jsonl"),
 ]
 
 
