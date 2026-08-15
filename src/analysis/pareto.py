@@ -49,6 +49,11 @@ DEFAULT_RUNS = [
     ("unpaired λ=0.5", "results/raw/vllm_eval/trained_lam0_5.jsonl"),
     ("unpaired λ=1.0", "results/raw/vllm_eval/trained_lam1_0.jsonl"),
     ("unpaired λ=2.0", "results/raw/vllm_eval/trained_lam2_0.jsonl"),
+    # Same lambda, same pairing, two groups per batch; only the advantage
+    # normaliser differs. The pair isolates whether the null is a property of the
+    # optimiser's normalisation or of the model.
+    ("norm=group λ=2.0", "results/raw/vllm_eval/trained_accum4_group_lam2_0.jsonl"),
+    ("norm=batch λ=2.0", "results/raw/vllm_eval/trained_accum4_batch_lam2_0.jsonl"),
 ]
 
 

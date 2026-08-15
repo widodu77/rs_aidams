@@ -21,40 +21,89 @@
       "think_tokens": 196.0483870967742,
       "think_rate": 0.967741935483871
     },
-    "trained \u03bb=0.05": {
+    "paired \u03bb=0.05": {
+      "n": 248,
+      "accuracy": 0.8830645161290323,
+      "tokens": 262.2540322580645,
+      "think_tokens": 193.60887096774192,
+      "think_rate": 0.9919354838709677
+    },
+    "paired \u03bb=0.25": {
+      "n": 248,
+      "accuracy": 0.8870967741935484,
+      "tokens": 271.78629032258067,
+      "think_tokens": 198.1451612903226,
+      "think_rate": 0.9838709677419355
+    },
+    "paired \u03bb=0.5": {
+      "n": 248,
+      "accuracy": 0.907258064516129,
+      "tokens": 259.5,
+      "think_tokens": 188.58064516129033,
+      "think_rate": 0.9879032258064516
+    },
+    "paired \u03bb=1.0": {
+      "n": 248,
+      "accuracy": 0.907258064516129,
+      "tokens": 262.9959677419355,
+      "think_tokens": 194.85887096774192,
+      "think_rate": 0.9919354838709677
+    },
+    "paired \u03bb=2.0": {
+      "n": 248,
+      "accuracy": 0.8790322580645161,
+      "tokens": 267.5443548387097,
+      "think_tokens": 191.09274193548387,
+      "think_rate": 0.9798387096774194
+    },
+    "unpaired \u03bb=0.05": {
       "n": 248,
       "accuracy": 0.8911290322580645,
       "tokens": 238.86693548387098,
       "think_tokens": 168.35887096774192,
       "think_rate": 0.9879032258064516
     },
-    "trained \u03bb=0.25": {
+    "unpaired \u03bb=0.25": {
       "n": 248,
       "accuracy": 0.8830645161290323,
       "tokens": 230.95564516129033,
       "think_tokens": 165.95564516129033,
       "think_rate": 0.9959677419354839
     },
-    "trained \u03bb=0.5": {
+    "unpaired \u03bb=0.5": {
       "n": 248,
       "accuracy": 0.8911290322580645,
       "tokens": 223.98387096774192,
       "think_tokens": 150.75,
       "think_rate": 0.9838709677419355
     },
-    "trained \u03bb=1.0": {
+    "unpaired \u03bb=1.0": {
       "n": 248,
       "accuracy": 0.8870967741935484,
       "tokens": 230.6008064516129,
       "think_tokens": 160.27822580645162,
       "think_rate": 0.9879032258064516
     },
-    "trained \u03bb=2.0": {
+    "unpaired \u03bb=2.0": {
       "n": 248,
       "accuracy": 0.8911290322580645,
       "tokens": 234.69354838709677,
       "think_tokens": 165.94354838709677,
       "think_rate": 0.9919354838709677
+    },
+    "norm=group \u03bb=2.0": {
+      "n": 248,
+      "accuracy": 0.8911290322580645,
+      "tokens": 280.06451612903226,
+      "think_tokens": 192.55241935483872,
+      "think_rate": 0.9637096774193549
+    },
+    "norm=batch \u03bb=2.0": {
+      "n": 248,
+      "accuracy": 0.9032258064516129,
+      "tokens": 266.80645161290323,
+      "think_tokens": 193.1209677419355,
+      "think_rate": 0.9838709677419355
     },
     "oracle": {
       "n": 248,
@@ -72,38 +121,87 @@
       "parallel_multiple": 0.975,
       "irrelevance": 0.9583333333333334
     },
-    "trained \u03bb=0.05": {
+    "paired \u03bb=0.05": {
+      "simple_python": 1.0,
+      "multiple": 1.0,
+      "parallel": 1.0,
+      "parallel_multiple": 0.975,
+      "irrelevance": 0.9791666666666666
+    },
+    "paired \u03bb=0.25": {
+      "simple_python": 0.9875,
+      "multiple": 0.975,
+      "parallel": 0.975,
+      "parallel_multiple": 0.975,
+      "irrelevance": 1.0
+    },
+    "paired \u03bb=0.5": {
+      "simple_python": 1.0,
+      "multiple": 1.0,
+      "parallel": 1.0,
+      "parallel_multiple": 0.95,
+      "irrelevance": 0.9791666666666666
+    },
+    "paired \u03bb=1.0": {
+      "simple_python": 1.0,
+      "multiple": 1.0,
+      "parallel": 1.0,
+      "parallel_multiple": 0.95,
+      "irrelevance": 1.0
+    },
+    "paired \u03bb=2.0": {
+      "simple_python": 1.0,
+      "multiple": 0.975,
+      "parallel": 0.975,
+      "parallel_multiple": 0.975,
+      "irrelevance": 0.9583333333333334
+    },
+    "unpaired \u03bb=0.05": {
       "simple_python": 0.9875,
       "multiple": 1.0,
       "parallel": 0.975,
       "parallel_multiple": 0.975,
       "irrelevance": 1.0
     },
-    "trained \u03bb=0.25": {
+    "unpaired \u03bb=0.25": {
       "simple_python": 1.0,
       "multiple": 1.0,
       "parallel": 1.0,
       "parallel_multiple": 0.975,
       "irrelevance": 1.0
     },
-    "trained \u03bb=0.5": {
+    "unpaired \u03bb=0.5": {
       "simple_python": 1.0,
       "multiple": 1.0,
       "parallel": 0.975,
       "parallel_multiple": 0.95,
       "irrelevance": 0.9791666666666666
     },
-    "trained \u03bb=1.0": {
+    "unpaired \u03bb=1.0": {
       "simple_python": 1.0,
       "multiple": 1.0,
       "parallel": 0.975,
       "parallel_multiple": 0.975,
       "irrelevance": 0.9791666666666666
     },
-    "trained \u03bb=2.0": {
+    "unpaired \u03bb=2.0": {
       "simple_python": 1.0,
       "multiple": 1.0,
       "parallel": 1.0,
+      "parallel_multiple": 0.975,
+      "irrelevance": 0.9791666666666666
+    },
+    "norm=group \u03bb=2.0": {
+      "simple_python": 0.9875,
+      "multiple": 0.975,
+      "parallel": 0.975,
+      "parallel_multiple": 0.9,
+      "irrelevance": 0.9583333333333334
+    },
+    "norm=batch \u03bb=2.0": {
+      "simple_python": 1.0,
+      "multiple": 0.975,
+      "parallel": 0.975,
       "parallel_multiple": 0.975,
       "irrelevance": 0.9791666666666666
     }
