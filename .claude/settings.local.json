@@ -10,7 +10,8 @@
       "WebFetch(domain:link.springer.com)",
       "WebFetch(domain:aclanthology.org)",
       "WebFetch(domain:arxiv.org)",
-      "PowerShell(cd \"C:\\\\Users\\\\walid\\\\OneDrive\\\\Desktop\\\\aidams\\\\Researchwork-summer-aidams\"; $env:UV_PROJECT_ENVIRONMENT=\"C:/Users/walid/venvs/aidams-rs\"; $env:PYTHONPATH=\"src\"; uv run --no-sync pytest -q 2>&1 | Select-Object -Last 3; uv run --no-sync python -m train.train_grpo --help 2>&1 | Select-Object -First 3)"
+      "PowerShell(cd \"C:\\\\Users\\\\walid\\\\OneDrive\\\\Desktop\\\\aidams\\\\Researchwork-summer-aidams\"; $env:UV_PROJECT_ENVIRONMENT=\"C:/Users/walid/venvs/aidams-rs\"; $env:PYTHONPATH=\"src\"; uv run --no-sync pytest -q 2>&1 | Select-Object -Last 3; uv run --no-sync python -m train.train_grpo --help 2>&1 | Select-Object -First 3)",
+      "PowerShell(cd \"C:\\\\Users\\\\walid\\\\OneDrive\\\\Desktop\\\\aidams\\\\Researchwork-summer-aidams\"; $env:UV_PROJECT_ENVIRONMENT=\"C:/Users/walid/venvs/aidams-rs\"; uv run --no-sync python -m pytest tests -q 2>&1 | Select-Object -Last 25)"
     ]
   }
 }

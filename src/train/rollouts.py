@@ -39,6 +39,40 @@ from __future__ import annotations
 from prompts.contract import chat_template_kwargs
 
 
+def no_think_marker(tokenizer, messages, policy: str) -> list[int]:
+    """The tokens Qwen3's template appends when thinking is disabled.
+
+    Derived by rendering the same conversation both ways and taking the
+    difference, rather than hard-coding `<think>\\n\\n</think>\\n\\n`. The literal
+    string differs between template versions, and a stale constant would silently
+    force the wrong tokens into every direct rollout.
+
+    Asserts the no-think rendering is the thinking rendering plus a **suffix**.
+    If a future template instead injected the marker earlier in the prompt, the
+    difference would not be a suffix and this returns nothing usable — better to
+    fail here than to splice tokens into the middle of a completion.
+    """
+    def render(enable_thinking: bool) -> list[int]:
+        kwargs = chat_template_kwargs(policy)
+        kwargs["enable_thinking"] = enable_thinking
+        out = tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_dict=False, **kwargs
+        )
+        if isinstance(out, dict):
+            out = out["input_ids"]
+        if out and isinstance(out[0], list):
+            out = out[0]
+        return list(out)
+
+    thinking, direct = render(True), render(False)
+    if len(direct) <= len(thinking) or direct[: len(thinking)] != thinking:
+        raise RuntimeError(
+            "the no-think rendering is not the thinking rendering plus a suffix; "
+            "this template cannot be used for gate rollouts without re-deriving the marker"
+        )
+    return direct[len(thinking) :]
+
+
 def make_paired_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str = "adaptive"):
     """Build a TRL `rollout_func` that splits each group across thinking modes.
 
@@ -167,6 +201,119 @@ def make_paired_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str
             "prompt_ids": prompt_ids,
             "completion_ids": completion_ids,
             "logprobs": logprobs,
+        }
+
+    return rollout_func
+
+
+def make_gate_rollout_func(tokenizer, think_fraction: float = 0.5, policy: str = "gate"):
+    """Paired rollouts where the decision lives in the *completion*.
+
+    Phase E measured the flaw in `make_paired_rollout_func`: it creates the
+    direct branch by re-rendering the prompt with `enable_thinking=False`, which
+    makes Qwen3's template append an empty `<think></think>` to the **prompt**.
+    The completion therefore begins after the decision not to think, so the
+    decision is never something the policy is trained to produce. Reinforcing
+    those rollouts raises their likelihood under a prompt that is never deployed,
+    and the measured effect was the opposite of the intended one: +32.9 tokens
+    per item against the identical unpaired run, with no accuracy gain
+    (`notes/2026-08-15.md`).
+
+    Here both halves of the group share **one** prompt, rendered exactly as it
+    will be at evaluation. The direct half is forced by prepending the same
+    marker tokens to its *completion* instead. Consequences:
+
+    - the decision is inside the completion, so the gradient reaches it;
+    - both branches are on-policy for the deployed prompt;
+    - the parser already scores an empty think block as `did_think=False` with
+      zero think tokens (`bfcl_scorer.py`, and deliberately so), meaning the
+      reward prices the direct branch correctly with no changes;
+    - at evaluation the model can emit that marker itself, which is precisely
+      the gate the project is trying to produce.
+
+    **This returns `logprobs=None`**, because vLLM reports logprobs only for
+    tokens it generated and the forced marker has none. TRL treats `None` as
+    "no sampling logprobs available" and computes everything from the model, but
+    the importance-sampling correction is guarded on a config flag rather than on
+    the value, so `vllm_importance_sampling_correction=False` is required. That
+    correction has been nearly inert throughout this project
+    (`sampling_logp_difference/mean` between 0.005 and 0.018 in every logged
+    run), but it is still a change of optimiser, so the comparison run must
+    disable it too.
+    """
+    if not 0.0 < think_fraction < 1.0:
+        raise ValueError("think_fraction must be strictly between 0 and 1")
+
+    def token_ids(messages) -> list[int]:
+        kwargs = chat_template_kwargs(policy)
+        kwargs["enable_thinking"] = True  # identical for both halves, by design
+        out = tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_dict=False, **kwargs
+        )
+        if isinstance(out, dict):
+            out = out["input_ids"]
+        if out and isinstance(out[0], list):
+            out = out[0]
+        out = list(out)
+        if not all(isinstance(token, int) for token in out):
+            offender = next(t for t in out if not isinstance(t, int))
+            raise TypeError(
+                f"chat template produced non-integer token ids (saw {type(offender).__name__})"
+            )
+        return out
+
+    def rollout_func(prompts, trainer) -> dict:
+        group_size = getattr(trainer, "num_generations", None) or trainer.args.num_generations
+        n_think = max(1, round(group_size * think_fraction))
+        if group_size - n_think < 1:
+            raise ValueError(
+                f"think_fraction={think_fraction} leaves no direct rollouts at "
+                f"num_generations={group_size}"
+            )
+        if len(prompts) % group_size:
+            raise ValueError(
+                f"got {len(prompts)} prompts, not a multiple of num_generations={group_size}; "
+                "TRL's sampler emits each prompt exactly num_generations times in a row"
+            )
+
+        marker = no_think_marker(tokenizer, prompts[0], policy)
+
+        # One prompt per row, identical within a group. Rows past `n_think` are
+        # sent with the marker appended so generation continues *after* it; the
+        # marker is moved back into the completion below.
+        prompt_ids: list[list[int]] = []
+        sent: list[list[int]] = []
+        forced: list[bool] = []
+        for index, messages in enumerate(prompts):
+            position = index % group_size
+            if messages != prompts[index - position]:
+                raise RuntimeError(
+                    f"prompt at position {index} differs from the first of its group"
+                )
+            base = token_ids(messages)
+            prompt_ids.append(base)
+            is_direct = position >= n_think
+            forced.append(is_direct)
+            sent.append(base + marker if is_direct else base)
+
+        _, completion_ids, _, _ = trainer.vllm_generation.generate(sent, None, 1)
+        if len(completion_ids) != len(prompts):
+            raise RuntimeError(
+                f"vllm_generation.generate returned {len(completion_ids)} completions for "
+                f"{len(prompts)} prompts; TRL requires exactly one per prompt row."
+            )
+
+        completions = [
+            list(marker) + list(c) if is_direct else list(c)
+            for c, is_direct in zip(completion_ids, forced)
+        ]
+
+        return {
+            "prompt_ids": prompt_ids,
+            "completion_ids": completions,
+            # See the docstring: the forced marker has no sampled logprob, so the
+            # importance-sampling correction must be disabled for this path.
+            "logprobs": None,
         }
 
     return rollout_func

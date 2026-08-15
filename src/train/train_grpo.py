@@ -74,10 +74,41 @@ def parse_args() -> argparse.Namespace:
         "divide out a change of ordering. See src/train/rollouts.py.",
     )
     p.add_argument(
+        "--gate-rollouts",
+        action="store_true",
+        help="paired rollouts where the decision lives in the COMPLETION, not the prompt. "
+        "--paired-rollouts builds its direct branch by re-rendering with "
+        "enable_thinking=False, which appends an empty <think></think> to the *prompt*; "
+        "the completion then begins after the decision, so the policy is never trained to "
+        "make it, and reinforcing those rollouts optimises a prompt that is never deployed. "
+        "Measured cost of that flaw: +32.9 tokens/item versus the identical unpaired run, "
+        "no accuracy gain (notes/2026-08-15.md). This path shares one prompt across both "
+        "halves and forces the marker into the direct half's completion instead. Implies "
+        "--no-is-correction, since the forced tokens have no sampled logprob.",
+    )
+    p.add_argument(
+        "--no-is-correction",
+        action="store_true",
+        help="disable vLLM importance-sampling correction. Required by --gate-rollouts, and "
+        "available on its own so a comparison run can be made at the same setting. The "
+        "correction has been nearly inert here (sampling_logp_difference/mean 0.005-0.018 "
+        "across every logged run), but it is still a change of optimiser.",
+    )
+    p.add_argument(
         "--think-fraction",
         type=float,
         default=0.5,
-        help="share of each group generated with thinking enabled, under --paired-rollouts.",
+        help="share of each group generated with thinking enabled, under "
+        "--paired-rollouts or --gate-rollouts.",
+    )
+    p.add_argument(
+        "--policy",
+        default="adaptive",
+        help="prompt wording for the training prompts. Must match the policy the adapter is "
+        "evaluated under. 'gate' frames the choice as a decision and lists the direct shape "
+        "first; the base model's think rate is 97.2%% under it versus 96.8%% under 'adaptive', "
+        "so it changes nothing on its own, but it is the prompt the gate rollouts were "
+        "designed against.",
     )
     p.add_argument("--eval-fraction", type=float, default=0.2)
     p.add_argument("--split-seed", type=int, default=0)
@@ -181,7 +212,16 @@ def parse_args() -> argparse.Namespace:
         "Safe to pass on a fresh run: with no checkpoint present it simply starts "
         "from scratch.",
     )
-    return p.parse_args()
+    args = p.parse_args()
+    # Checked here rather than at use, which is after the dataset build: an
+    # incompatible pair should fail in milliseconds, not after a minute of work.
+    if args.paired_rollouts and args.gate_rollouts:
+        p.error(
+            "--paired-rollouts and --gate-rollouts are alternative ways to put both "
+            "thinking modes in a group; pick one. gate is the corrected version "
+            "(decision in the completion rather than the prompt)."
+        )
+    return args
 
 
 def resolve_hardware_defaults(args, torch) -> None:
@@ -268,15 +308,18 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Paired rollouts must re-render each prompt twice (once per thinking mode),
-    # which is impossible from a pre-rendered string — so that path keeps the
-    # prompt conversational and templates it inside the rollout function.
+    # Both rollout paths template the prompt themselves — paired re-renders it
+    # once per thinking mode, gate derives the no-think marker by diffing the two
+    # renderings — and neither is possible from a pre-rendered string. So they
+    # keep the prompt conversational and do the templating inside the rollout
+    # function.
     train_ds, eval_ds = build_datasets(
         tokenizer,
         eval_fraction=args.eval_fraction,
         seed=args.split_seed,
         manifest_path=os.path.join(args.output, "split_manifest.json"),
-        conversational=args.paired_rollouts,
+        conversational=args.paired_rollouts or args.gate_rollouts,
+        policy=args.policy,
     )
     completions_per_step = args.per_device_batch_size * args.gradient_accumulation_steps
     print(f"train {len(train_ds)}  eval {len(eval_ds)}")
@@ -362,6 +405,10 @@ def main() -> None:
         vllm_enable_sleep_mode=args.use_vllm and args.vllm_sleep,
         reward_weights=reward_weights,
         scale_rewards=args.scale_rewards,
+        # Guarded on this flag rather than on whether sampling logprobs exist, so
+        # a rollout path that returns None must switch it off explicitly or the
+        # correction dereferences None several hundred lines later.
+        vllm_importance_sampling_correction=not (args.no_is_correction or args.gate_rollouts),
         logging_steps=args.log_steps,
         save_steps=args.save_steps,
         seed=args.seed,
@@ -374,23 +421,29 @@ def main() -> None:
     )
 
     rollout_func = None
-    if args.paired_rollouts:
+    if args.paired_rollouts or args.gate_rollouts:
         if not args.use_vllm:
             raise ValueError(
-                "--paired-rollouts requires --use-vllm: it reuses trainer.vllm_generation "
-                "so that sampling, weight syncing and logprob bookkeeping stay identical "
-                "to the standard path."
+                "paired/gate rollouts require --use-vllm: they reuse "
+                "trainer.vllm_generation so that sampling, weight syncing and logprob "
+                "bookkeeping stay identical to the standard path."
             )
-        from train.rollouts import make_paired_rollout_func
+        from train.rollouts import make_gate_rollout_func, make_paired_rollout_func
 
-        rollout_func = make_paired_rollout_func(tokenizer, args.think_fraction)
         n_think = max(1, round(args.num_generations * args.think_fraction))
-        print(
-            f"paired rollouts: {n_think} thinking + {args.num_generations - n_think} direct "
-            f"per group of {args.num_generations}"
-        )
+        n_direct = args.num_generations - n_think
+        if args.gate_rollouts:
+            rollout_func = make_gate_rollout_func(tokenizer, args.think_fraction, args.policy)
+            kind = "gate rollouts (decision in the completion)"
+        else:
+            rollout_func = make_paired_rollout_func(tokenizer, args.think_fraction)
+            kind = "paired rollouts (decision in the prompt)"
+        print(f"{kind}: {n_think} thinking + {n_direct} direct per group of {args.num_generations}")
         # TRL's rollout_func is experimental and warns loudly on every call.
         os.environ.setdefault("TRL_EXPERIMENTAL_SILENCE", "1")
+
+    if args.no_is_correction or args.gate_rollouts:
+        print("vLLM importance-sampling correction: OFF")
 
     trainer = GRPOTrainer(
         model=args.model,

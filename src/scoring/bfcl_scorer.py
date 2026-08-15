@@ -34,9 +34,8 @@ from dataclasses import dataclass, field
 import bfcl_eval
 from bfcl_eval.constants.enums import Language
 
-# ===========================================================================
-# JOB 1 — decode the model's output into checker-ready calls
-# ===========================================================================
+
+# Job 1 : decode the model's output into checker-ready calls
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -125,10 +124,8 @@ def _iter_tool_calls(text: str):
         position = end
 
 
-# ===========================================================================
-# JOB 2 — judge the decoded call
-# ===========================================================================
 
+# Job 2 : judge the decoded call
 
 def score_sample(
     functions: list[dict],
@@ -181,10 +178,8 @@ def score_sample(
     }
 
 
-# ===========================================================================
-# THE DATA CARRIER — what job 1 hands to job 2
-# ===========================================================================
 
+# The data carrier, what job 1 hands to job 2
 
 @dataclass
 class ParsedOutput:
@@ -204,9 +199,8 @@ class ParsedOutput:
         return len(self.calls) > 0
 
 
-# ===========================================================================
-# LOADING THE BFCL DATA
-# ===========================================================================
+
+#Loading the BFCL data
 
 DATA_DIR = os.path.join(os.path.dirname(bfcl_eval.__file__), "data")
 
@@ -231,12 +225,12 @@ def load_category(test_category: str) -> list[dict]:
     return [{**q, "ground_truth": answers.get(q["id"])} for q in questions]
 
 
-# ===========================================================================
-# PLUMBING — getting BFCL's checker to import at all
-#
+
+# Plumbing, getting BFCL's checker to import at all
+
 # None of this is part of the idea. It exists because importing the official
 # checker drags in every API model handler to resolve a single boolean.
-# ===========================================================================
+
 
 # `ast_checker` threads `model_name` through to look up exactly one boolean:
 # `underscore_to_dot`, which rewrites "." to "_" in function names for providers

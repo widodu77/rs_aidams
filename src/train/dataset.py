@@ -165,11 +165,18 @@ def build_datasets(
     seed: int = 0,
     manifest_path: str | None = "results/split_manifest.json",
     conversational: bool = False,
+    policy: str = TRAIN_POLICY,
 ):
-    """Build HF Datasets for training. Returns `(train_ds, eval_ds)`."""
+    """Build HF Datasets for training. Returns `(train_ds, eval_ds)`.
+
+    `policy` selects the prompt wording. It must match whatever the trained
+    adapter is later evaluated under, or the policy is being scored on prompts it
+    never saw. The split itself is independent of it: `split_records` keys on
+    category and item id, so every policy yields the same 992/248 partition.
+    """
     from datasets import Dataset
 
-    records = build_records(tokenizer, categories, conversational=conversational)
+    records = build_records(tokenizer, categories, policy=policy, conversational=conversational)
     train, evaluation = split_records(records, eval_fraction, seed)
 
     if manifest_path:
