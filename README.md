@@ -35,7 +35,7 @@ Correctness comes from the Berkeley Function Calling Leaderboard's own checker: 
 
 **We never tell the model when to think.** During training it samples both a reasoned and a direct continuation for the same input, and the reward decides which one paid off. The decision rule emerges on its own. The knob `λ` sets the price of thinking — raise it and reasoning has to earn its keep, lower it and reasoning is nearly free.
 
-## What we're trying to show
+## What we set out to show
 
 **1. The tradeoff curve.** Train at several values of `λ`, then plot accuracy against tokens spent, with always-think and never-think as reference points. The question is whether the adaptive model sits *above the line between them* — buying accuracy at a cost neither fixed policy can reach.
 
@@ -92,15 +92,58 @@ The cause was that quantization was crippling the *never* policy specifically �
 
 **On a 1.7B model, NF4 didn't merely cost accuracy; it flipped the sign of the reasoning effect on two categories.** The full before/after is preserved in [`notes/2026-08-09.md`](notes/2026-08-09.md), superseded sections intact.
 
-## Three ways this can end
+## How it actually ended
 
-| Outcome | What it means |
-|---|---|
-| Adaptive beats both fixed policies | Main result — learned per-call gating works |
-| The policy collapses to always or never | The reward can't sustain a gate. A real finding, and one the assessment explicitly rewards |
-| It gates, but not by difficulty | It found some other signal. Characterizing that is a finding |
+**No gate formed.** Twelve trained policies, five values of `λ` spanning 40×, two sampling schemes,
+two advantage normalisers. Every one of them reasons on 96% to 99% of items. On the 248 held-out
+items:
 
-There is no outcome where the project has nothing to report.
+| | accuracy | tokens | think rate |
+|---|---|---|---|
+| never | 71.4% | 51 | 0% |
+| always | 89.5% | 264 | 98.4% |
+| adaptive prompt | 89.1% | 281 | 96.8% |
+| trained (12 runs) | 87.9–90.7% | 224–281 | 96.4–99.6% |
+| **per-item oracle** | **92.7%** | **99** | 17.4% |
+
+Paired McNemar tests put every accuracy comparison at `p ≥ 0.167`, so the spread across trained runs
+carries no information. The tradeoff curve is a point cloud, not a frontier.
+
+### The reason, which is the real result
+
+GRPO standardises advantages inside a group: `A = (r − mean) / (std + 1e-4)`. Whenever correctness
+and format are constant within that group, the reward collapses to `K − λ·think/768`, so `λ` scales
+the numerator and the denominator alike and divides straight back out. It has no influence on the
+gradient at all, at any value.
+
+Measured over 500 logged steps: **`λ` cancels on 68.8% of them**, and the identity
+`reward_std = λ·std(think)/768` holds to `9.7e-06` across 344 groups and five `λ`. What survives is
+the `1e-4` guarding the division, a numerical stabiliser rather than anything to do with the reward.
+
+### Two repairs, both falsified
+
+Forcing every group to contain both a reasoned and a direct rollout made the deployed policy
+**longer** by 32.9 tokens per item (95% CI `+23.1` to `+43.0`), with no accuracy gain. The cause is
+that `enable_thinking=False` prefills `<think></think>` into the *prompt*, so a direct rollout's
+completion never contains the decision not to think. Reinforcing it raises its probability under a
+prompt that is never deployed, while the thinking rollouts are reinforced under the one that is.
+
+Normalising advantages across the batch instead of the group restores `λ`'s meaning on 61% of steps,
+but at a magnitude too small to shift the policy, and it still cancels on the other 39%.
+
+Full result in [`notes/2026-08-15.md`](notes/2026-08-15.md), derivation and verification in
+[`notes/2026-08-13.md`](notes/2026-08-13.md).
+
+### What the study establishes
+
+The prize is real and large (the oracle is both more accurate and 2.7× cheaper than always-think).
+Prompting cannot collect it. Length-penalised GRPO cannot collect it either, for a structural reason
+rather than a tuning one. The claim is about *this objective under this optimiser*, on 100 steps of
+a 1.7B model with LoRA and one seed per configuration, not about the problem being unsolvable.
+
+The diagnosis points at two specific next steps: make the gate an explicit token in the *completion*
+so both branches stay on-policy, or take the length term out of the normaliser so its magnitude
+survives standardisation. Neither was attempted here.
 
 ## Status
 
@@ -109,9 +152,12 @@ There is no outcome where the project has nothing to report.
 | **A** | Per-sample BFCL scoring | done |
 | **B** | Output contract + fixed-prompt baselines | done |
 | **C** | Reward function + test suite | done |
-| **D** | GRPO training | sweep run; two implementation faults found, fixes pending |
-| **E** | Tradeoff curve + H1 analysis | frontier computed; H1 pending |
+| **D** | GRPO training | done, 12 runs |
+| **E** | Frontier + significance testing | done |
 | **F** | Paper, demo, documentation | pending |
+
+H1 (does it think more on harder calls?) was never testable: think rate sits at 90–100% in every
+category for every policy, so there is no variation to correlate difficulty against.
 
 A and B are measurement. C and D are the contribution. E is where we find out whether it worked.
 
@@ -154,11 +200,11 @@ Dependencies are pinned in `uv.lock` (committed deliberately — it is what make
 │   ├── rewards/       # GRPO reward + metric fns          (Phase C)
 │   └── train/         # dataset/split + TRL GRPO          (Phase D)
 ├── colab/             # GPU notebooks: generation, training
-├── tests/             # scorer, reward and split suites   (61 tests)
+├── tests/             # scorer, reward, rollout, stats suites (105 tests)
 ├── results/
 │   ├── raw/           # NF4 generations (superseded)
 │   └── raw/vllm/      # fp16 generations (current)
-├── notes/             # daily research notes + engineering_log.md (20 entries)
+├── notes/             # daily research notes + engineering_log.md (29 entries)
 └── docs/              # proposal, design notes
 ```
 
