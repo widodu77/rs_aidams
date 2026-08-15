@@ -1046,3 +1046,54 @@ the actual finding: `reward_std` is *also* predicted analytically (`λ·std(thin
 9.7e-06. The measurement began as a sanity check on the reward and ended as the explanation for
 why the whole experiment reads flat — see `notes/2026-08-13.md`. Sanity checks are worth running
 past the point where they have passed.
+
+---
+
+## 29 — A guard that created the state it was meant to find
+
+**Phase E · 2026-08-14**
+
+**Symptom.** Two failures in sequence, in a fresh Colab runtime:
+
+```
+AssertionError: no adapter for paired_lam0_05 — the sweep did not finish this lambda
+...
+ValueError: Mountpoint must not already contain files
+```
+
+The first is false — that adapter had been trained, saved, and successfully evaluated the day
+before. The second appeared when trying to mount Drive to fix the first.
+
+**Root cause.** The eval cell opens with
+
+```python
+os.makedirs(DRIVE_EVAL, exist_ok=True)   # /content/drive/MyDrive/...
+```
+
+before anything has checked that Drive is mounted. On an unmounted runtime `/content/drive` is an
+ordinary empty directory, so `makedirs` cheerfully builds the whole tree **on the local disk**.
+Every subsequent existence check then looks into that empty tree, finds nothing, and reports the
+adapters as missing — with a message blaming training. Worse, `drive.mount()` refuses to mount over
+a non-empty directory, so the line that caused the problem also **prevents the fix**.
+
+**Fix.** Recovery is `!mv /content/drive /content/drive_junk` (moved rather than deleted — if the
+diagnosis were wrong, nothing is lost), then mount, then re-run. Prevention is an assertion placed
+*before* the first write:
+
+```python
+assert os.path.isdir("/content/drive/MyDrive"), "Drive is not mounted — ..."
+```
+
+and a corrected message on the adapter check, since a missing adapter is far more often an
+unmounted Drive than an unfinished run.
+
+**Lesson.** `exist_ok=True` is not free. On a path whose existence is itself the precondition —
+a mount point, a network share, an external volume — creating the directory *manufactures the
+appearance of a healthy environment* and destroys the evidence that it is not. **Check a mount
+before writing under it; never let setup code fabricate the thing it depends on.**
+
+**Second lesson, on error messages.** `"the sweep did not finish this lambda"` named the wrong
+cause with total confidence and sent the next fifteen minutes toward re-uploading adapters through
+git. An assertion should describe *what was not found*, and name the likeliest cause only when it
+actually is the likeliest. This is the fifth entry (23, 26, 27, and now 29) where a confidently
+wrong or merely tautological error message cost more time than the underlying bug.

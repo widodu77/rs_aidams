@@ -26,6 +26,17 @@ artefact of numerical hygiene rather than of the reward. `attenuation` reports
 it as `std / (std + 1e-4)`.
 
 Reads TRL's `log_history.json` directly, so it needs no GPU and no re-run.
+
+**One caveat, and it is easy to be caught by.** TRL logs *batch*-level
+aggregates, so `metric_correctness/std` describes the whole generation batch,
+not one group. When the batch holds exactly one group -- `per_device_batch_size
+* gradient_accumulation_steps == num_generations` -- the two coincide and the
+`graded` count means what it says. When the batch holds several groups, that std
+also fires whenever two groups merely *differ from each other*, which grants
+group-standardised advantages nothing. The count is then an **upper bound** for
+`scale_rewards="group"`, and exact only for `scale_rewards="batch"`, where the
+batch genuinely is the normalising unit. Pass `--groups-per-batch` so the
+distinction is printed rather than silently assumed.
 """
 
 from __future__ import annotations
@@ -124,7 +135,7 @@ def summarise(path: Path, lambda_think: float, label: str, budget: int = 768) ->
     )
 
 
-def format_table(summaries: list[RunSummary]) -> str:
+def format_table(summaries: list[RunSummary], groups_per_batch: int = 1) -> str:
     lines = [
         f"{'lambda':>7} {'steps':>6} {'graded':>7} {'graded%':>8} "
         f"{'allCorr':>8} {'allWrong':>9} {'cancelErr':>10} {'attenuat':>9} "
@@ -152,6 +163,13 @@ def format_table(summaries: list[RunSummary]) -> str:
         f"cancellation identity reward_std == lambda*std(think)/768 holds to "
         f"{worst:.1e} relative error on every cancelling step."
     )
+    if groups_per_batch > 1:
+        lines.append(
+            f"\nNOTE: {groups_per_batch} groups per batch. TRL logs batch-level std, so "
+            "'graded' also counts steps where the groups merely differ from each other -- "
+            "which does nothing for group-standardised advantages. Read the figure as an "
+            "UPPER BOUND for scale_rewards='group', and as exact for scale_rewards='batch'."
+        )
     return "\n".join(lines)
 
 
@@ -165,6 +183,13 @@ def main() -> None:
         help="e.g. --run 0.05=runs/paired_lam0_05/log_history.json (repeatable)",
     )
     parser.add_argument("--think-token-budget", type=int, default=768)
+    parser.add_argument(
+        "--groups-per-batch",
+        type=int,
+        default=1,
+        help="per_device_batch_size * gradient_accumulation_steps / num_generations. "
+        "Above 1, 'graded' is an upper bound for scale_rewards='group' — see module docstring.",
+    )
     parser.add_argument("--out", type=Path, help="optional JSON dump of the summaries")
     args = parser.parse_args()
 
@@ -177,7 +202,7 @@ def main() -> None:
             summarise(Path(path), float(lam), label=path, budget=args.think_token_budget)
         )
 
-    print(format_table(summaries))
+    print(format_table(summaries, groups_per_batch=args.groups_per_batch))
 
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
