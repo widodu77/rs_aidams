@@ -54,11 +54,16 @@ DEFAULT_RUNS = [
     # optimiser's normalisation or of the model.
     ("norm=group λ=2.0", "results/raw/vllm_eval/trained_accum4_group_lam2_0.jsonl"),
     ("norm=batch λ=2.0", "results/raw/vllm_eval/trained_accum4_batch_lam2_0.jsonl"),
-    # Where the decision lives, at fixed lambda and fixed pairing. The IS
-    # correction is off in both, so the only difference is prompt versus
-    # completion. `gate` is the corrected design; `isoff` is its control.
+    # The control for the gate runs: decision in the PROMPT, same lambda, same
+    # pairing, importance-sampling correction off in both. Differs from
+    # `gate λ=2.0` in exactly one respect.
     ("decision=prompt λ=2.0", "results/raw/vllm_eval/trained_paired_isoff_lam2_0.jsonl"),
-    ("decision=completion λ=2.0", "results/raw/vllm_eval/trained_gate_lam2_0.jsonl"),
+    # The gate sweep: decision in the COMPLETION, five values of lambda.
+    ("gate λ=0.05", "results/raw/vllm_eval/trained_gate_lam0_05.jsonl"),
+    ("gate λ=0.25", "results/raw/vllm_eval/trained_gate_lam0_25.jsonl"),
+    ("gate λ=0.5", "results/raw/vllm_eval/trained_gate_lam0_5.jsonl"),
+    ("gate λ=1.0", "results/raw/vllm_eval/trained_gate_lam1_0.jsonl"),
+    ("gate λ=2.0", "results/raw/vllm_eval/trained_gate_lam2_0.jsonl"),
     # The untrained model under the same prompt wording the gate runs used.
     ("gate prompt (base)", "results/raw/vllm_eval/base_gate.jsonl"),
 ]

@@ -1097,3 +1097,47 @@ cause with total confidence and sent the next fifteen minutes toward re-uploadin
 git. An assertion should describe *what was not found*, and name the likeliest cause only when it
 actually is the likeliest. This is the fifth entry (23, 26, 27, and now 29) where a confidently
 wrong or merely tautological error message cost more time than the underlying bug.
+
+## 30 — The same cancellation twice: fixing λ's magnitude did not fix λ's outcome
+
+**Phase F · 2026-08-15**
+
+**Symptom.** None, in the sense of a crash. The gate-rollout fix worked exactly as designed, and the
+λ sweep it enabled produced five policies that are behaviourally indistinguishable across a
+fortyfold range in λ. Zero versus one discordant item out of 248 between the endpoints.
+
+**What happened.** Entry-style diagnosis: the Phase E null was traced to λ dividing out of the
+normalised advantage, because on a group with constant correctness and format, `reward_std` is
+exactly `λ·std(think)/768` and the λ in numerator and denominator cancel. Verified numerically to
+9.7e-06 across 344 groups. The fix put the thinking decision inside the completion so that λ's
+signal survives normalisation, and it did survive — think rate moved for the first time in the
+project, 0.45 to 0.00.
+
+Then the sweep showed the cancellation had a second floor underneath it. λ's magnitude now reaches
+the gradient, but on a constant-correctness group the *only* variance is still length, so the
+standardised advantage is `±1` for direct-versus-thinking whatever λ is. λ sets the sign and nothing
+else. The sign points at "shorter" in every group where thinking fails to flip a correctness term,
+which at 1.7B on single-turn BFCL is nearly all of them. So the objective's argmin is 0% think rate
+for every nonzero λ, and every run walks there within thirty steps and then freezes on degenerate
+groups.
+
+**Fix.** There isn't one at the λ level, which is the point of the entry. A knob whose effect is
+removed by a normaliser cannot be recovered by turning it further. Both the Phase E failure and the
+Phase F cliff are the same structural fact seen at two scales: **group standardisation destroys any
+information that is constant in direction across the group, no matter how large the coefficient in
+front of it.** Getting an interior optimum requires the reward to have interior variance — a term
+whose *sign* differs between rollouts in the same group — which means asymmetric error pricing, a
+per-category budget, or an entropy floor. Not a λ.
+
+**Lesson.** Twice now the debugging instinct was to check whether the signal was *reaching* the
+optimiser, and twice that was the wrong question. It was reaching it both times; what mattered was
+whether the signal carried any information the normaliser preserves. **Before tuning a coefficient,
+work out what the objective's optimum is as a function of that coefficient.** Five GPU-hours would
+have been saved by five minutes of algebra: `argmin` over think rate of `correctness − λ·length` is
+0 for all λ > 0 unless correctness depends on length, and the fp16 break-even table had already said
+it does not. The sweep was still worth running as confirmation, but it should have been framed as a
+confirmation rather than a search.
+
+**Related.** Entry 27 (the misreading that cost four runs) and this one share a shape: a confident
+mental model of what the framework was doing, held without checking, that survived several rounds of
+debugging because the failures it produced were all downstream and looked like different bugs.

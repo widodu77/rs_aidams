@@ -8,6 +8,8 @@ dependencies = [
     "accelerate>=1.14.0",
     "bfcl-eval==2026.3.23",
     "bitsandbytes>=0.50.0",
+    "matplotlib>=3.11.1",
+    "pypdfium2>=5.13.0",
     "soundfile>=0.14.0",
     # torch is declared explicitly, even though bfcl-eval already pulls it in,
     # because [tool.uv.sources] only overrides *direct* dependencies. Without

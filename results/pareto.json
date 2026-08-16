@@ -112,7 +112,35 @@
       "think_tokens": 192.3790322580645,
       "think_rate": 0.9838709677419355
     },
-    "decision=completion \u03bb=2.0": {
+    "gate \u03bb=0.05": {
+      "n": 248,
+      "accuracy": 0.8951612903225806,
+      "tokens": 61.024193548387096,
+      "think_tokens": 0.0,
+      "think_rate": 0.0
+    },
+    "gate \u03bb=0.25": {
+      "n": 248,
+      "accuracy": 0.8951612903225806,
+      "tokens": 60.721774193548384,
+      "think_tokens": 0.0,
+      "think_rate": 0.0
+    },
+    "gate \u03bb=0.5": {
+      "n": 248,
+      "accuracy": 0.8991935483870968,
+      "tokens": 60.875,
+      "think_tokens": 0.0,
+      "think_rate": 0.0
+    },
+    "gate \u03bb=1.0": {
+      "n": 248,
+      "accuracy": 0.8951612903225806,
+      "tokens": 60.69758064516129,
+      "think_tokens": 0.0,
+      "think_rate": 0.0
+    },
+    "gate \u03bb=2.0": {
       "n": 248,
       "accuracy": 0.8991935483870968,
       "tokens": 59.65725806451613,
@@ -233,7 +261,35 @@
       "parallel_multiple": 0.975,
       "irrelevance": 0.9791666666666666
     },
-    "decision=completion \u03bb=2.0": {
+    "gate \u03bb=0.05": {
+      "simple_python": 0.0,
+      "multiple": 0.0,
+      "parallel": 0.0,
+      "parallel_multiple": 0.0,
+      "irrelevance": 0.0
+    },
+    "gate \u03bb=0.25": {
+      "simple_python": 0.0,
+      "multiple": 0.0,
+      "parallel": 0.0,
+      "parallel_multiple": 0.0,
+      "irrelevance": 0.0
+    },
+    "gate \u03bb=0.5": {
+      "simple_python": 0.0,
+      "multiple": 0.0,
+      "parallel": 0.0,
+      "parallel_multiple": 0.0,
+      "irrelevance": 0.0
+    },
+    "gate \u03bb=1.0": {
+      "simple_python": 0.0,
+      "multiple": 0.0,
+      "parallel": 0.0,
+      "parallel_multiple": 0.0,
+      "irrelevance": 0.0
+    },
+    "gate \u03bb=2.0": {
       "simple_python": 0.0,
       "multiple": 0.0,
       "parallel": 0.0,

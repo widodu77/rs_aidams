@@ -46,6 +46,9 @@ DEFAULT_COMPARISONS = [
     # Does lambda order the policies within a sweep?
     ("paired λ=0.5", "paired λ=2.0"),
     ("unpaired λ=0.5", "unpaired λ=2.0"),
+    # Same question for the gate sweep, where lambda *does* reach the gradient.
+    # The endpoints are 40x apart, so if lambda buys anything it shows up here.
+    ("gate λ=0.05", "gate λ=2.0"),
     # Does the normaliser matter, holding lambda and pairing fixed?
     ("norm=batch λ=2.0", "norm=group λ=2.0"),
     # Did forcing both modes into the group change the deployed policy?
@@ -53,15 +56,15 @@ DEFAULT_COMPARISONS = [
     # Phase F. Moving the decision from the prompt into the completion is the
     # only difference between these two runs; lambda, pairing and the IS setting
     # are all held fixed.
-    ("decision=completion λ=2.0", "decision=prompt λ=2.0"),
+    ("gate λ=2.0", "decision=prompt λ=2.0"),
     # The claim that matters: does it give up accuracy for the token saving?
     # A NULL here is the result, so the direction of the test matters -- it is
     # evidence of no detectable loss, not evidence of a gain.
-    ("decision=completion λ=2.0", "always"),
-    ("decision=completion λ=2.0", "adaptive prompt"),
+    ("gate λ=2.0", "always"),
+    ("gate λ=2.0", "adaptive prompt"),
     # Against the cost-matched anchor. Both spend ~55 tokens and never reason,
     # so this isolates what training bought at fixed budget.
-    ("decision=completion λ=2.0", "never"),
+    ("gate λ=2.0", "never"),
 ]
 
 

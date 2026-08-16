@@ -119,6 +119,23 @@
     ]
   },
   {
+    "label_a": "gate \u03bb=0.05",
+    "label_b": "gate \u03bb=2.0",
+    "n": 248,
+    "acc_a": 0.8951612903225806,
+    "acc_b": 0.8991935483870968,
+    "only_a": 0,
+    "only_b": 1,
+    "p_value": 1.0,
+    "tokens_a": 61.024193548387096,
+    "tokens_b": 59.65725806451613,
+    "token_diff": 1.3669354838709677,
+    "token_ci": [
+      0.2862903225806452,
+      2.838709677419355
+    ]
+  },
+  {
     "label_a": "norm=batch \u03bb=2.0",
     "label_b": "norm=group \u03bb=2.0",
     "n": 248,
@@ -153,7 +170,7 @@
     ]
   },
   {
-    "label_a": "decision=completion \u03bb=2.0",
+    "label_a": "gate \u03bb=2.0",
     "label_b": "decision=prompt \u03bb=2.0",
     "n": 248,
     "acc_a": 0.8991935483870968,
@@ -170,7 +187,7 @@
     ]
   },
   {
-    "label_a": "decision=completion \u03bb=2.0",
+    "label_a": "gate \u03bb=2.0",
     "label_b": "always",
     "n": 248,
     "acc_a": 0.8991935483870968,
@@ -187,7 +204,7 @@
     ]
   },
   {
-    "label_a": "decision=completion \u03bb=2.0",
+    "label_a": "gate \u03bb=2.0",
     "label_b": "adaptive prompt",
     "n": 248,
     "acc_a": 0.8991935483870968,
@@ -204,7 +221,7 @@
     ]
   },
   {
-    "label_a": "decision=completion \u03bb=2.0",
+    "label_a": "gate \u03bb=2.0",
     "label_b": "never",
     "n": 248,
     "acc_a": 0.8991935483870968,

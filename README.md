@@ -184,9 +184,37 @@ from "77% of the tokens disappear at no measurable cost".
 Limits: 100 optimiser steps, Qwen3-1.7B, LoRA r=32, one task family, one seed per configuration, and
 the winning run collapsed to 0% think rate rather than finding a gate.
 
-The obvious next experiment, now that λ demonstrably controls something: sweep λ ∈ {0.05 … 2.0} with
-gate rollouts. λ=2.0 gives 0%, the untrained model gives 97%, and a gate, if one exists, is in
-between. About 90 minutes.
+### The λ sweep ran, and the objective has a cliff
+
+λ finally controlled something, so we swept it: five gate runs, λ from 0.05 to 2.0, a fortyfold
+range. All five landed on the same policy.
+
+| λ | acc | tokens | think rate |
+|---|---|---|---|
+| 0.05 | 89.5% | 61.0 | 0% |
+| 0.25 | 89.5% | 60.7 | 0% |
+| 0.5 | 89.9% | 60.9 | 0% |
+| 1.0 | 89.5% | 60.7 | 0% |
+| 2.0 | 89.9% | 59.7 | 0% |
+
+The endpoints disagree on **one held-out item out of 248** (`p = 1.000`, +1.4 tokens [+0.3, +2.8]).
+The adapters are genuinely different, 91–93% byte-identical outputs rather than 100%, so λ moves the
+weights. It just moves nothing you can observe. Every run starts near 0.45 think rate and hits
+exactly 0.00 by step 27 at the latest, after which the groups are degenerate and training is a no-op.
+
+The reason is a second λ-cancellation, one level up from the first. On a group where correctness and
+format agree, the only reward variance is length, so the standardised advantage is ±1 whatever λ is.
+λ picks the sign, and the sign never changes: at 1.7B on single-turn BFCL, thinking almost never
+flips a correctness term, so 0% think rate is the argmin of the objective for every nonzero λ. There
+is no interior optimum, which means no amount of tuning finds one.
+
+So the gate is dead, and it died of the reward rather than the budget. Getting one needs a different
+objective, not a different λ: asymmetric error pricing, a per-category budget, or an entropy floor to
+stop the collapse. None of those were tested.
+
+What survives is the finding that made the sweep worth running. On this benchmark at this scale,
+chain-of-thought before a tool call is **purchasable**: it costs about 200 tokens per item and buys
+nothing measurable. That is a real result about tool use, and it is not the one we set out to find.
 
 ## Status
 
@@ -197,7 +225,8 @@ between. About 90 minutes.
 | **C** | Reward function + test suite | done |
 | **D** | GRPO training | done, 12 runs |
 | **E** | Frontier + significance testing | done |
-| **F** | Paper, demo, documentation | pending |
+| **F** | Gate rollouts + λ sweep | done, 6 runs |
+| **G** | Paper, demo, documentation | pending |
 
 H1 (does it think more on harder calls?) was never testable: think rate sits at 90–100% in every
 category for every policy, so there is no variation to correlate difficulty against.
